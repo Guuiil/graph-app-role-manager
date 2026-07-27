@@ -2,6 +2,8 @@
 
 [Version française](README.fr.md)
 
+**Current cross-platform release: v1.0**
+
 A graphical tool for inspecting, assigning, and removing Microsoft Graph application
 permissions on managed identities and service principals.
 
@@ -21,6 +23,8 @@ application-permission catalog stays aligned with the tenant instead of being ha
 - Display the Microsoft Graph app roles currently assigned to the selected identity.
 - Assign several permissions in one operation while avoiding duplicates.
 - Remove selected assignments after an explicit confirmation.
+- Filter a tenant-wide identity list locally or run a server-side display-name search.
+- Keep permission selections while changing the permission filter.
 - Keep an activity log and show a completion summary.
 - Store no password, client secret, certificate, or access token on disk.
 
@@ -29,11 +33,10 @@ application-permission catalog stays aligned with the tenant instead of being ha
 | Version | Best for | Authentication | Requirements |
 | --- | --- | --- | --- |
 | [Windows PowerShell GUI](windows/Graph-App-Role-Manager.ps1) | Windows administrators using Microsoft Graph PowerShell | Interactive `Connect-MgGraph` | Windows, PowerShell 7+, Microsoft Graph modules |
-| [Cross-platform Python GUI](cross-platform/graph_app_role_manager.py) | Windows, macOS, or Linux desktops | MSAL device-code flow | Python 3.10+, Tkinter, a public-client app registration |
+| [Cross-platform Python GUI v1.0](cross-platform/graph_app_role_manager.py) | Windows, macOS, or Linux desktops | Interactive `Connect-MgGraph` through the bundled backend | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
 
-The Windows version is the simplest choice when Microsoft Graph PowerShell is already part
-of the administration workstation. The Python version is useful when the same interface is
-needed across operating systems.
+The cross-platform version does not require a custom App Registration, client ID, client
+secret, certificate, or additional Python packages.
 
 ## Required delegated permissions
 
@@ -60,16 +63,14 @@ but it asks for confirmation first.
 ### Cross-platform
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r cross-platform/requirements.txt
+pwsh -NoProfile -Command "Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
 python cross-platform/graph_app_role_manager.py
 ```
 
-On Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
-
-The Python version needs the tenant ID or domain and the client ID of a public-client app
-registration. See the [cross-platform setup guide](docs/cross-platform.md).
+Keep `graph_app_role_manager.py`, `graph_backend.ps1`, and
+`graph-app-role-manager-icon.png` together. The tenant field is optional. See the
+[cross-platform setup guide](docs/cross-platform.md) for OS-specific prerequisites and
+troubleshooting.
 
 ## Safe operating sequence
 

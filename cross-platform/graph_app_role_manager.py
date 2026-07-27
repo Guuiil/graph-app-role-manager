@@ -1,44 +1,27 @@
 #!/usr/bin/env python3
+"""Graph App Role Manager v1.
+
+Cross-platform Tkinter GUI using a persistent PowerShell 7 backend.
+Authentication is handled by Connect-MgGraph, so no custom App Registration,
+client ID, secret, certificate, MSAL package, or requests package is required.
 """
-Graph App Role Manager
-Cross-platform GUI for Windows and macOS.
-
-Features:
-- Authenticates with Microsoft Entra ID using MSAL device code flow.
-- Searches Managed Identities / service principals by display name.
-- Loads Microsoft Graph application permissions (app roles).
-- Displays existing Microsoft Graph application permissions.
-- Assigns selected app roles while avoiding duplicates.
-- Removes selected app roles after explicit confirmation.
-
-Required delegated permissions on the public-client App Registration:
-- Application.Read.All
-- AppRoleAssignment.ReadWrite.All
-
-The signed-in administrator must also hold an appropriate Entra role.
-"""
-
 from __future__ import annotations
 
 import json
 import queue
+import shutil
+import subprocess
+import sys
 import threading
 import tkinter as tk
-import webbrowser
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Any
-from urllib.parse import quote
+from typing import Any, Callable
 
-import msal
-import requests
-
-GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
-SCOPES = [
-    "Application.Read.All",
-    "AppRoleAssignment.ReadWrite.All",
-]
+PROTOCOL_PREFIX = "__GARM__"
+APP_VERSION = "1.0.0"
 
 
 @dataclass(frozen=True)
@@ -49,193 +32,176 @@ class AppRole:
     description: str
 
 
-class GraphClient:
-    def __init__(self) -> None:
-        self.access_token: str | None = None
-        self.graph_sp: dict[str, Any] | None = None
-
-    @property
-    def connected(self) -> bool:
-        return bool(self.access_token)
-
-    def _headers(self) -> dict[str, str]:
-        if not self.access_token:
-            raise RuntimeError("Not connected to Microsoft Graph.")
-        return {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-
-    def authenticate_device_code(
-        self,
-        tenant_id: str,
-        client_id: str,
-        callback,
-    ) -> dict[str, Any]:
-        authority = f"https://login.microsoftonline.com/{tenant_id}"
-        app = msal.PublicClientApplication(client_id=client_id, authority=authority)
-
-        flow = app.initiate_device_flow(scopes=SCOPES)
-        if "user_code" not in flow:
-            raise RuntimeError(
-                "Unable to start device-code authentication:\n"
-                + json.dumps(flow, indent=2)
-            )
-
-        callback(flow)
-        result = app.acquire_token_by_device_flow(flow)
-
-        if "access_token" not in result:
-            raise RuntimeError(
-                result.get("error_description")
-                or result.get("error")
-                or "Authentication failed."
-            )
-
-        self.access_token = result["access_token"]
-        return result
-
-    def get(self, path_or_url: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        url = path_or_url if path_or_url.startswith("http") else f"{GRAPH_BASE}{path_or_url}"
-        response = requests.get(url, headers=self._headers(), params=params, timeout=60)
-        self._raise_for_graph_error(response)
-        return response.json()
-
-    def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = requests.post(
-            f"{GRAPH_BASE}{path}",
-            headers=self._headers(),
-            json=payload,
-            timeout=60,
-        )
-        self._raise_for_graph_error(response)
-        return response.json() if response.content else {}
-
-    def delete(self, path: str) -> None:
-        response = requests.delete(
-            f"{GRAPH_BASE}{path}",
-            headers=self._headers(),
-            timeout=60,
-        )
-        self._raise_for_graph_error(response)
+class PowerShellBridge:
+    def __init__(self, backend_path: Path, event_callback: Callable[[str], None]) -> None:
+        self.backend_path = backend_path
+        self.event_callback = event_callback
+        self.process: subprocess.Popen[str] | None = None
+        self.pending: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+        self.startup_errors: list[str] = []
 
     @staticmethod
-    def _raise_for_graph_error(response: requests.Response) -> None:
-        if response.ok:
+    def find_pwsh() -> str | None:
+        return shutil.which("pwsh")
+
+    def start(self) -> None:
+        pwsh = self.find_pwsh()
+        if not pwsh:
+            raise RuntimeError(
+                "PowerShell 7 (pwsh) was not found. Install it first, then restart the tool."
+            )
+        if not self.backend_path.exists():
+            raise RuntimeError(f"PowerShell backend not found: {self.backend_path}")
+
+        self.process = subprocess.Popen(
+            [pwsh, "-NoLogo", "-NoProfile", "-File", str(self.backend_path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+
+        if not self.ready.wait(timeout=15):
+            details = "\n".join(self.startup_errors[-10:]).strip()
+            exit_code = self.process.poll() if self.process else None
+            self.stop()
+            message = "The PowerShell backend did not start within 15 seconds."
+            if exit_code is not None:
+                message += f" Process exited with code {exit_code}."
+            if details:
+                message += f"\n\nPowerShell details:\n{details}"
+            raise RuntimeError(message)
+
+        if not self.process or self.process.poll() is not None:
+            details = "\n".join(self.startup_errors[-10:]).strip()
+            exit_code = self.process.poll() if self.process else None
+            self.stop()
+            message = f"The PowerShell backend exited during startup (code {exit_code})."
+            if details:
+                message += f"\n\nPowerShell details:\n{details}"
+            raise RuntimeError(message)
+
+    def _read_stdout(self) -> None:
+        assert self.process and self.process.stdout
+        for raw_line in self.process.stdout:
+            line = raw_line.rstrip("\r\n")
+            if not line.startswith(PROTOCOL_PREFIX):
+                if line:
+                    self.event_callback(f"PowerShell: {line}")
+                continue
+            try:
+                payload = json.loads(line[len(PROTOCOL_PREFIX) :])
+            except json.JSONDecodeError:
+                self.event_callback(f"Invalid backend response: {line}")
+                continue
+
+            if payload.get("event") == "ready":
+                self.ready.set()
+                continue
+
+            request_id = payload.get("requestId")
+            with self.lock:
+                response_queue = self.pending.get(request_id)
+            if response_queue:
+                response_queue.put(payload)
+
+        # Reaching EOF means the backend exited. Do not mark it as ready.
+
+    def _read_stderr(self) -> None:
+        assert self.process and self.process.stderr
+        for raw_line in self.process.stderr:
+            line = raw_line.rstrip("\r\n")
+            if line:
+                self.startup_errors.append(line)
+                self.event_callback(f"PowerShell error stream: {line}")
+
+    def call(self, command: str, timeout: int = 180, **kwargs: Any) -> Any:
+        if not self.process or self.process.poll() is not None or not self.process.stdin:
+            raise RuntimeError("The PowerShell backend is not running.")
+
+        request_id = str(uuid.uuid4())
+        response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+        with self.lock:
+            self.pending[request_id] = response_queue
+
+        request = {"requestId": request_id, "command": command, **kwargs}
+        try:
+            self.process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+            self.process.stdin.flush()
+            response = response_queue.get(timeout=timeout)
+        except queue.Empty as exc:
+            raise RuntimeError(f"PowerShell command '{command}' timed out.") from exc
+        finally:
+            with self.lock:
+                self.pending.pop(request_id, None)
+
+        if not response.get("ok"):
+            raise RuntimeError(response.get("error") or "Unknown PowerShell backend error.")
+        return response.get("data")
+
+    def stop(self) -> None:
+        process = self.process
+        self.process = None
+        if not process:
             return
         try:
-            detail = response.json()
-            message = detail.get("error", {}).get("message", response.text)
-        except ValueError:
-            message = response.text
-        raise RuntimeError(f"Microsoft Graph HTTP {response.status_code}: {message}")
-
-    def search_service_principals(self, display_name_prefix: str) -> list[dict[str, Any]]:
-        escaped = display_name_prefix.replace("'", "''")
-        result = self.get(
-            "/servicePrincipals",
-            params={
-                "$filter": f"startsWith(displayName,'{escaped}')",
-                "$select": "id,appId,displayName,servicePrincipalType,accountEnabled",
-                "$top": "100",
-            },
-        )
-        return sorted(result.get("value", []), key=lambda item: item.get("displayName", ""))
-
-    def load_graph_app_roles(self) -> list[AppRole]:
-        result = self.get(
-            "/servicePrincipals",
-            params={
-                "$filter": f"appId eq '{GRAPH_APP_ID}'",
-                "$select": "id,appId,displayName,appRoles",
-            },
-        )
-        values = result.get("value", [])
-        if not values:
-            raise RuntimeError("Microsoft Graph service principal was not found.")
-
-        self.graph_sp = values[0]
-        roles: list[AppRole] = []
-        for role in self.graph_sp.get("appRoles", []):
-            if (
-                role.get("isEnabled")
-                and "Application" in role.get("allowedMemberTypes", [])
-                and role.get("value")
-            ):
-                roles.append(
-                    AppRole(
-                        id=role["id"],
-                        value=role["value"],
-                        display_name=role.get("displayName", ""),
-                        description=role.get("description", ""),
-                    )
-                )
-        return sorted(roles, key=lambda role: role.value.lower())
-
-    def get_graph_assignments(self, target_sp_id: str) -> list[dict[str, Any]]:
-        if not self.graph_sp:
-            self.load_graph_app_roles()
-
-        items: list[dict[str, Any]] = []
-        url: str | None = f"{GRAPH_BASE}/servicePrincipals/{target_sp_id}/appRoleAssignments?$top=999"
-
-        while url:
-            result = self.get(url)
-            items.extend(result.get("value", []))
-            url = result.get("@odata.nextLink")
-
-        graph_resource_id = self.graph_sp["id"]
-        return [item for item in items if item.get("resourceId") == graph_resource_id]
-
-    def assign_app_role(self, target_sp_id: str, app_role_id: str) -> dict[str, Any]:
-        if not self.graph_sp:
-            raise RuntimeError("Microsoft Graph application roles are not loaded.")
-
-        payload = {
-            "principalId": target_sp_id,
-            "resourceId": self.graph_sp["id"],
-            "appRoleId": app_role_id,
-        }
-        return self.post(
-            f"/servicePrincipals/{target_sp_id}/appRoleAssignments",
-            payload,
-        )
-
-    def remove_app_role_assignment(
-        self,
-        target_sp_id: str,
-        assignment_id: str,
-    ) -> None:
-        self.delete(
-            f"/servicePrincipals/{target_sp_id}/appRoleAssignments/{assignment_id}"
-        )
+            if process.stdin and process.poll() is None:
+                process.stdin.close()
+            process.terminate()
+            process.wait(timeout=3)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
 
 
 class GraphAppRoleManager(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-
-        self.title("Graph App Role Manager")
+        self.title(f"Graph App Role Manager v{APP_VERSION}")
         self.geometry("1180x800")
+
+        # Use the bundled PNG as the window/application icon when supported.
+        self._app_icon = None
+        icon_path = Path(__file__).resolve().with_name("graph-app-role-manager-icon.png")
+        if icon_path.exists():
+            try:
+                self._app_icon = tk.PhotoImage(file=str(icon_path))
+                self.iconphoto(True, self._app_icon)
+            except tk.TclError:
+                pass
         self.minsize(1000, 700)
 
-        self.graph = GraphClient()
+        backend = Path(__file__).with_name("graph_backend.ps1")
+        self.bridge = PowerShellBridge(backend, self._queue_log)
+        self.ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.roles: list[AppRole] = []
         self.filtered_roles: list[AppRole] = []
+        self.selected_role_ids: set[str] = set()
+        self.rendering_permissions = False
+        self.identity_results: list[dict[str, Any]] = []
+        self.all_identity_results: list[dict[str, Any]] = []
         self.selected_sp: dict[str, Any] | None = None
         self.current_assignments: dict[str, dict[str, Any]] = {}
-        self.ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self.connected = False
 
         self._configure_style()
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self._process_ui_queue)
+        self.after(200, self.start_backend)
 
     def _configure_style(self) -> None:
         style = ttk.Style(self)
-        available = style.theme_names()
-        if "clam" in available:
+        if "clam" in style.theme_names():
             style.theme_use("clam")
-
         style.configure("Header.TFrame", background="#1f2937")
         style.configure(
             "HeaderTitle.TLabel",
@@ -255,16 +221,14 @@ class GraphAppRoleManager(tk.Tk):
     def _build_ui(self) -> None:
         header = ttk.Frame(self, style="Header.TFrame", padding=(20, 14))
         header.pack(fill="x")
-
         left = ttk.Frame(header, style="Header.TFrame")
         left.pack(side="left", fill="x", expand=True)
         ttk.Label(left, text="Graph App Role Manager", style="HeaderTitle.TLabel").pack(anchor="w")
         ttk.Label(
             left,
-            text="Assign Microsoft Graph application permissions to a Managed Identity",
+            text="Manage Microsoft Graph application permissions for Managed Identities and Service Principals",
             style="HeaderSubtitle.TLabel",
         ).pack(anchor="w")
-
         self.connect_button = ttk.Button(
             header,
             text="Connect to Microsoft Graph",
@@ -275,13 +239,94 @@ class GraphAppRoleManager(tk.Tk):
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=14, pady=14)
-
         main_tab = ttk.Frame(notebook, padding=12)
         log_tab = ttk.Frame(notebook, padding=12)
         notebook.add(main_tab, text="Assign permissions")
         notebook.add(log_tab, text="Activity log")
 
-        self._build_main_tab(main_tab)
+        prereq = ttk.LabelFrame(main_tab, text="Connection", padding=12)
+        prereq.pack(fill="x", pady=(0, 10))
+        self.prereq_var = tk.StringVar(value="Checking PowerShell prerequisites...")
+        ttk.Label(prereq, textvariable=self.prereq_var).pack(side="left")
+        ttk.Label(prereq, text="Tenant ID/domain (optional):").pack(side="left", padx=(30, 8))
+        self.tenant_var = tk.StringVar()
+        ttk.Entry(prereq, textvariable=self.tenant_var, width=34).pack(side="left")
+
+        identity = ttk.LabelFrame(main_tab, text="1. Select the target Managed Identity or Service Principal", padding=12)
+        identity.pack(fill="x", pady=(0, 10))
+        row = ttk.Frame(identity)
+        row.pack(fill="x")
+        ttk.Label(row, text="Display name").pack(side="left")
+        self.identity_name_var = tk.StringVar()
+        identity_entry = ttk.Entry(row, textvariable=self.identity_name_var)
+        identity_entry.pack(side="left", fill="x", expand=True, padx=10)
+        identity_entry.bind("<KeyRelease>", lambda _event: self.filter_identity_combo())
+        ttk.Button(row, text="Search", command=self.search_identity).pack(side="left")
+        self.identity_combo = ttk.Combobox(identity, state="readonly")
+        self.identity_combo.pack(fill="x", pady=(10, 8))
+        self.identity_combo.bind("<<ComboboxSelected>>", self.identity_selected)
+        self.identity_summary_var = tk.StringVar(value="No service principal selected.")
+        ttk.Label(identity, textvariable=self.identity_summary_var).pack(anchor="w")
+
+        body = ttk.Panedwindow(main_tab, orient=tk.HORIZONTAL)
+        body.pack(fill="both", expand=True)
+        permissions = ttk.LabelFrame(
+            body, text="2. Select Microsoft Graph application permissions", padding=12
+        )
+        current = ttk.LabelFrame(body, text="3. Current Microsoft Graph assignments", padding=12)
+        body.add(permissions, weight=3)
+        body.add(current, weight=2)
+
+        filter_row = ttk.Frame(permissions)
+        filter_row.pack(fill="x")
+        self.permission_filter_var = tk.StringVar()
+        permission_entry = ttk.Entry(filter_row, textvariable=self.permission_filter_var)
+        permission_entry.pack(side="left", fill="x", expand=True)
+        permission_entry.bind("<KeyRelease>", lambda _event: self.apply_permission_filter())
+        ttk.Button(filter_row, text="Load permissions", command=self.load_permissions).pack(
+            side="left", padx=(8, 0)
+        )
+
+        list_frame = ttk.Frame(permissions)
+        list_frame.pack(fill="both", expand=True, pady=10)
+        self.permission_list = tk.Listbox(
+            list_frame, selectmode=tk.MULTIPLE, activestyle="none", exportselection=False
+        )
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.permission_list.yview)
+        self.permission_list.configure(yscrollcommand=scrollbar.set)
+        self.permission_list.bind("<<ListboxSelect>>", self.permission_selection_changed)
+        self.permission_list.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        bottom = ttk.Frame(permissions)
+        bottom.pack(fill="x")
+        self.permission_count_var = tk.StringVar(value="0 permission(s) displayed")
+        ttk.Label(bottom, textvariable=self.permission_count_var).pack(side="left")
+        self.selected_permission_count_var = tk.StringVar(value="0 permission(s) selected")
+        ttk.Label(bottom, textvariable=self.selected_permission_count_var).pack(side="left", padx=(14, 0))
+        ttk.Button(bottom, text="Clear selection", command=self.clear_permission_selection).pack(side="right", padx=(8, 0))
+        ttk.Button(
+            bottom,
+            text="Assign selected permissions",
+            style="Success.TButton",
+            command=self.assign_permissions,
+        ).pack(side="right")
+
+        refresh_row = ttk.Frame(current)
+        refresh_row.pack(fill="x")
+        ttk.Button(refresh_row, text="Refresh", command=self.refresh_assignments).pack(side="left")
+        self.assigned_count_var = tk.StringVar(value="0 permission(s) assigned")
+        ttk.Label(refresh_row, textvariable=self.assigned_count_var).pack(side="left", padx=10)
+        ttk.Button(refresh_row, text="Remove selected", command=self.remove_permissions).pack(
+            side="right"
+        )
+        self.assignment_tree = ttk.Treeview(
+            current, columns=("permission", "display"), show="headings"
+        )
+        self.assignment_tree.heading("permission", text="Permission")
+        self.assignment_tree.heading("display", text="Display name")
+        self.assignment_tree.column("permission", width=260)
+        self.assignment_tree.column("display", width=220)
+        self.assignment_tree.pack(fill="both", expand=True, pady=(10, 0))
 
         self.log_text = tk.Text(
             log_tab,
@@ -292,137 +337,30 @@ class GraphAppRoleManager(tk.Tk):
             font=("Menlo" if self.tk.call("tk", "windowingsystem") == "aqua" else "Consolas", 10),
         )
         self.log_text.pack(fill="both", expand=True)
-        self.log("Graph App Role Manager started.")
+        self.log(f"Graph App Role Manager v{APP_VERSION} started.")
 
-    def _build_main_tab(self, parent: ttk.Frame) -> None:
-        connection = ttk.LabelFrame(parent, text="Connection settings", padding=12)
-        connection.pack(fill="x", pady=(0, 10))
+    def _queue_log(self, message: str) -> None:
+        self.ui_queue.put(("log", message))
 
-        ttk.Label(connection, text="Tenant ID or tenant domain").grid(row=0, column=0, sticky="w")
-        self.tenant_var = tk.StringVar()
-        ttk.Entry(connection, textvariable=self.tenant_var, width=42).grid(
-            row=1, column=0, sticky="ew", padx=(0, 12)
-        )
+    def start_backend(self) -> None:
+        self.set_busy(True)
 
-        ttk.Label(connection, text="Public-client Application (Client) ID").grid(
-            row=0, column=1, sticky="w"
-        )
-        self.client_var = tk.StringVar()
-        ttk.Entry(connection, textvariable=self.client_var, width=42).grid(
-            row=1, column=1, sticky="ew"
-        )
-        connection.columnconfigure(0, weight=1)
-        connection.columnconfigure(1, weight=1)
-
-        identity = ttk.LabelFrame(parent, text="1. Select the target Managed Identity", padding=12)
-        identity.pack(fill="x", pady=(0, 10))
-
-        row = ttk.Frame(identity)
-        row.pack(fill="x")
-        ttk.Label(row, text="Display name").pack(side="left")
-        self.identity_name_var = tk.StringVar()
-        ttk.Entry(row, textvariable=self.identity_name_var).pack(
-            side="left", fill="x", expand=True, padx=10
-        )
-        ttk.Button(row, text="Search", command=self.search_identity).pack(side="left")
-
-        self.identity_combo = ttk.Combobox(identity, state="readonly")
-        self.identity_combo.pack(fill="x", pady=(10, 8))
-        self.identity_combo.bind("<<ComboboxSelected>>", self.identity_selected)
-
-        summary = ttk.Frame(identity)
-        summary.pack(fill="x")
-        self.identity_summary_var = tk.StringVar(value="No identity selected.")
-        ttk.Label(summary, textvariable=self.identity_summary_var).pack(anchor="w")
-
-        body = ttk.Panedwindow(parent, orient=tk.HORIZONTAL)
-        body.pack(fill="both", expand=True)
-
-        permissions = ttk.LabelFrame(
-            body, text="2. Select Microsoft Graph application permissions", padding=12
-        )
-        current = ttk.LabelFrame(
-            body, text="3. Current Microsoft Graph assignments", padding=12
-        )
-        body.add(permissions, weight=3)
-        body.add(current, weight=2)
-
-        filter_row = ttk.Frame(permissions)
-        filter_row.pack(fill="x")
-        self.permission_filter_var = tk.StringVar()
-        permission_entry = ttk.Entry(
-            filter_row,
-            textvariable=self.permission_filter_var,
-        )
-        permission_entry.pack(side="left", fill="x", expand=True)
-        permission_entry.bind("<KeyRelease>", lambda _event: self.apply_permission_filter())
-        ttk.Button(
-            filter_row,
-            text="Load permissions",
-            command=self.load_permissions,
-        ).pack(side="left", padx=(8, 0))
-
-        list_frame = ttk.Frame(permissions)
-        list_frame.pack(fill="both", expand=True, pady=10)
-
-        self.permission_list = tk.Listbox(
-            list_frame,
-            selectmode=tk.MULTIPLE,
-            activestyle="none",
-            exportselection=False,
-        )
-        scrollbar = ttk.Scrollbar(
-            list_frame,
-            orient="vertical",
-            command=self.permission_list.yview,
-        )
-        self.permission_list.configure(yscrollcommand=scrollbar.set)
-        self.permission_list.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        bottom = ttk.Frame(permissions)
-        bottom.pack(fill="x")
-        self.permission_count_var = tk.StringVar(value="0 permission(s) displayed")
-        ttk.Label(bottom, textvariable=self.permission_count_var).pack(side="left")
-        ttk.Button(
-            bottom,
-            text="Assign selected permissions",
-            style="Success.TButton",
-            command=self.assign_permissions,
-        ).pack(side="right")
-
-        refresh_row = ttk.Frame(current)
-        refresh_row.pack(fill="x")
-        ttk.Button(refresh_row, text="Refresh", command=self.refresh_assignments).pack(
-            side="left"
-        )
-        ttk.Button(
-            refresh_row,
-            text="Remove selected",
-            command=self.remove_permissions,
-        ).pack(side="right")
-        self.assigned_count_var = tk.StringVar(value="0 permission(s) assigned")
-        ttk.Label(refresh_row, textvariable=self.assigned_count_var).pack(
-            side="left", padx=10
-        )
-
-        columns = ("permission", "display")
-        self.assignment_tree = ttk.Treeview(
-            current,
-            columns=columns,
-            show="headings",
-        )
-        self.assignment_tree.heading("permission", text="Permission")
-        self.assignment_tree.heading("display", text="Display name")
-        self.assignment_tree.column("permission", width=260)
-        self.assignment_tree.column("display", width=220)
-        self.assignment_tree.pack(fill="both", expand=True, pady=(10, 0))
-
-    def run_async(self, operation, *args) -> None:
         def worker() -> None:
             try:
-                result = operation(*args)
-                self.ui_queue.put(("success", result))
+                self.bridge.start()
+                prereq = self.bridge.call("prerequisites", timeout=30)
+                self.ui_queue.put(("backend_ready", prereq))
+            except Exception as exc:  # noqa: BLE001
+                self.ui_queue.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_async(self, event: str, operation: Callable[[], Any]) -> None:
+        self.set_busy(True)
+
+        def worker() -> None:
+            try:
+                self.ui_queue.put((event, operation()))
             except Exception as exc:  # noqa: BLE001
                 self.ui_queue.put(("error", str(exc)))
 
@@ -432,12 +370,16 @@ class GraphAppRoleManager(tk.Tk):
         try:
             while True:
                 event, payload = self.ui_queue.get_nowait()
-                if event == "device_flow":
-                    self.show_device_flow(payload)
+                if event == "log":
+                    self.log(payload)
+                elif event == "backend_ready":
+                    self.on_backend_ready(payload)
                 elif event == "connected":
                     self.on_connected(payload)
                 elif event == "identities":
                     self.on_identities(payload)
+                elif event == "all_identities":
+                    self.on_all_identities(payload)
                 elif event == "roles":
                     self.on_roles(payload)
                 elif event == "assignments":
@@ -462,82 +404,64 @@ class GraphAppRoleManager(tk.Tk):
     def log(self, message: str, level: str = "INFO") -> None:
         from datetime import datetime
 
-        line = f"[{datetime.now():%H:%M:%S}][{level}] {message}\n"
-        self.log_text.insert("end", line)
+        self.log_text.insert("end", f"[{datetime.now():%H:%M:%S}][{level}] {message}\n")
         self.log_text.see("end")
 
-    def connect(self) -> None:
-        tenant_id = self.tenant_var.get().strip()
-        client_id = self.client_var.get().strip()
-        if not tenant_id or not client_id:
+    def on_backend_ready(self, prereq: dict[str, Any]) -> None:
+        self.set_busy(False)
+        version = prereq.get("powershellVersion", "unknown")
+        graph_ok = prereq.get("graphModuleInstalled", False)
+        graph_version = prereq.get("graphModuleVersion") or "not installed"
+        self.prereq_var.set(f"PowerShell {version} | Microsoft.Graph.Authentication {graph_version}")
+        self.log(f"PowerShell backend ready. Version: {version}", "SUCCESS")
+        if not graph_ok:
             messagebox.showwarning(
-                "Missing configuration",
-                "Enter the tenant ID/domain and the public-client Application ID.",
+                "Missing Microsoft Graph module",
+                "Microsoft.Graph.Authentication is not installed.\n\nRun in PowerShell 7:\n"
+                "Install-Module Microsoft.Graph.Authentication -Scope CurrentUser",
             )
-            return
 
-        self.set_busy(True)
-        self.log("Starting device-code authentication...")
-
-        def worker() -> None:
-            try:
-                result = self.graph.authenticate_device_code(
-                    tenant_id,
-                    client_id,
-                    lambda flow: self.ui_queue.put(("device_flow", flow)),
-                )
-                self.ui_queue.put(("connected", result))
-            except Exception as exc:  # noqa: BLE001
-                self.ui_queue.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def show_device_flow(self, flow: dict[str, Any]) -> None:
-        verification_uri = flow.get("verification_uri") or flow.get("verification_uri_complete")
-        code = flow.get("user_code", "")
-        message = flow.get("message", "")
-
-        self.log(message)
-        self.clipboard_clear()
-        self.clipboard_append(code)
-
-        messagebox.showinfo(
-            "Microsoft Graph authentication",
-            f"{message}\n\nThe code has been copied to the clipboard.",
-        )
-        if verification_uri:
-            webbrowser.open(verification_uri)
+    def connect(self) -> None:
+        tenant = self.tenant_var.get().strip()
+        self.log("Opening Microsoft Graph interactive authentication...")
+        self.run_async("connected", lambda: self.bridge.call("connect", tenantId=tenant, timeout=300))
 
     def on_connected(self, result: dict[str, Any]) -> None:
         self.set_busy(False)
-        account = result.get("id_token_claims", {}).get("preferred_username", "Connected")
+        self.connected = True
+        account = result.get("account") or "Connected"
         self.connect_button.configure(text=f"Connected: {account}")
-        self.log(f"Connected as {account}.", "SUCCESS")
+        self.log(f"Connected as {account} in tenant {result.get('tenantId')}", "SUCCESS")
         self.load_permissions()
+        self.load_all_identities()
 
-    def search_identity(self) -> None:
-        name = self.identity_name_var.get().strip()
-        if not self.graph.connected:
-            messagebox.showwarning("Not connected", "Connect to Microsoft Graph first.")
+    def load_all_identities(self) -> None:
+        if not self.connected:
             return
-        if not name:
-            messagebox.showwarning("Missing name", "Enter a display name.")
-            return
+        self.log("Loading Managed Identities and Service Principals...")
+        self.run_async("all_identities", lambda: self.bridge.call("listServicePrincipals", timeout=180))
 
-        self.set_busy(True)
-        self.log(f"Searching service principals matching '{name}'...")
-
-        def worker() -> None:
-            try:
-                values = self.graph.search_service_principals(name)
-                self.ui_queue.put(("identities", values))
-            except Exception as exc:  # noqa: BLE001
-                self.ui_queue.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def on_identities(self, values: list[dict[str, Any]]) -> None:
+    def on_all_identities(self, values: list[dict[str, Any]]) -> None:
         self.set_busy(False)
+        self.all_identity_results = values
+        self.log(f"Loaded {len(values)} Managed Identities and Service Principals.", "SUCCESS")
+        self.filter_identity_combo()
+
+    def filter_identity_combo(self) -> None:
+        term = self.identity_name_var.get().strip().lower()
+        source = self.all_identity_results
+        if term:
+            values = [
+                item for item in source
+                if term in str(item.get("displayName", "")).lower()
+                or term in str(item.get("appId", "")).lower()
+                or term in str(item.get("id", "")).lower()
+            ]
+        else:
+            values = source
+        self.populate_identity_combo(values)
+
+    def populate_identity_combo(self, values: list[dict[str, Any]]) -> None:
         self.identity_results = values
         labels = [
             f"{item.get('displayName')} | {item.get('servicePrincipalType')} | {item.get('id')}"
@@ -547,47 +471,69 @@ class GraphAppRoleManager(tk.Tk):
         if values:
             self.identity_combo.current(0)
             self.identity_selected()
-            self.log(f"Found {len(values)} matching service principal(s).", "SUCCESS")
         else:
+            self.identity_combo.set("")
             self.selected_sp = None
-            self.identity_summary_var.set("No matching service principal found.")
-            self.log("No matching service principal found.", "WARNING")
+            self.identity_summary_var.set("No matching Managed Identity or Service Principal found.")
+
+    def search_identity(self) -> None:
+        if not self.connected:
+            messagebox.showwarning("Not connected", "Connect to Microsoft Graph first.")
+            return
+        name = self.identity_name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Missing name", "Enter a display name.")
+            return
+        self.log(f"Searching Managed Identities and Service Principals containing '{name}'...")
+        self.run_async(
+            "identities", lambda: self.bridge.call("searchServicePrincipals", prefix=name)
+        )
+
+    def on_identities(self, values: list[dict[str, Any]]) -> None:
+        self.set_busy(False)
+        self.populate_identity_combo(values)
+        if values:
+            self.log(f"Found {len(values)} matching service principal(s).", "SUCCESS")
 
     def identity_selected(self, _event=None) -> None:
         index = self.identity_combo.current()
         if index < 0:
             return
         self.selected_sp = self.identity_results[index]
+        sp_type = self.selected_sp.get("servicePrincipalType") or "ServicePrincipal"
+        enabled = self.selected_sp.get("accountEnabled")
+        status = "Enabled" if enabled is True else "Disabled" if enabled is False else "Unknown"
         self.identity_summary_var.set(
             f"Name: {self.selected_sp.get('displayName')}   |   "
+            f"Type: {sp_type}   |   Status: {status}   |   "
             f"Object ID: {self.selected_sp.get('id')}   |   "
             f"App ID: {self.selected_sp.get('appId')}"
         )
-        self.log(f"Selected target: {self.selected_sp.get('displayName')}")
         self.refresh_assignments()
 
     def load_permissions(self) -> None:
-        if not self.graph.connected:
+        if not self.connected:
             return
-        self.set_busy(True)
         self.log("Loading Microsoft Graph application permissions...")
+        self.run_async("roles", lambda: self.bridge.call("loadGraphRoles"))
 
-        def worker() -> None:
-            try:
-                roles = self.graph.load_graph_app_roles()
-                self.ui_queue.put(("roles", roles))
-            except Exception as exc:  # noqa: BLE001
-                self.ui_queue.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def on_roles(self, roles: list[AppRole]) -> None:
+    def on_roles(self, values: list[dict[str, Any]]) -> None:
         self.set_busy(False)
-        self.roles = roles
+        self.roles = [
+            AppRole(
+                id=item["id"],
+                value=item["value"],
+                display_name=item.get("displayName", ""),
+                description=item.get("description", ""),
+            )
+            for item in values
+        ]
         self.apply_permission_filter()
-        self.log(f"Loaded {len(roles)} application permissions.", "SUCCESS")
+        self.log(f"Loaded {len(self.roles)} application permissions.", "SUCCESS")
 
     def apply_permission_filter(self) -> None:
+        # Preserve selections made under previous filters while rebuilding the visible list.
+        self.permission_selection_changed()
         term = self.permission_filter_var.get().strip().lower()
         self.filtered_roles = [
             role
@@ -597,116 +543,172 @@ class GraphAppRoleManager(tk.Tk):
             or term in role.display_name.lower()
             or term in role.description.lower()
         ]
+        self.rendering_permissions = True
+        try:
+            self.permission_list.delete(0, "end")
+            for index, role in enumerate(self.filtered_roles):
+                self.permission_list.insert("end", f"{role.value} — {role.display_name}")
+                if role.id in self.selected_role_ids:
+                    self.permission_list.selection_set(index)
+        finally:
+            self.rendering_permissions = False
+        self.permission_count_var.set(f"{len(self.filtered_roles)} permission(s) displayed")
+        self.selected_permission_count_var.set(f"{len(self.selected_role_ids)} permission(s) selected")
 
-        self.permission_list.delete(0, "end")
-        for role in self.filtered_roles:
-            self.permission_list.insert(
-                "end",
-                f"{role.value} — {role.display_name}",
-            )
-        self.permission_count_var.set(
-            f"{len(self.filtered_roles)} permission(s) displayed"
-        )
+    def permission_selection_changed(self, _event=None) -> None:
+        if self.rendering_permissions:
+            return
+        visible_ids = {role.id for role in self.filtered_roles}
+        self.selected_role_ids.difference_update(visible_ids)
+        for index in self.permission_list.curselection():
+            self.selected_role_ids.add(self.filtered_roles[index].id)
+        self.selected_permission_count_var.set(f"{len(self.selected_role_ids)} permission(s) selected")
+
+    def clear_permission_selection(self) -> None:
+        self.selected_role_ids.clear()
+        self.permission_list.selection_clear(0, "end")
+        self.selected_permission_count_var.set("0 permission(s) selected")
 
     def refresh_assignments(self) -> None:
-        if not self.selected_sp or not self.graph.connected:
+        if not self.selected_sp or not self.connected:
             return
-        target_sp_id = self.selected_sp["id"]
-        self.set_busy(True)
-        self.log("Loading current Microsoft Graph assignments...")
-
-        def worker() -> None:
-            try:
-                assignments = self.graph.get_graph_assignments(target_sp_id)
-                self.ui_queue.put(("assignments", assignments))
-            except Exception as exc:  # noqa: BLE001
-                self.ui_queue.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
+        target_id = self.selected_sp["id"]
+        self.run_async(
+            "assignments", lambda: self.bridge.call("getAssignments", targetId=target_id)
+        )
 
     def on_assignments(self, assignments: list[dict[str, Any]]) -> None:
         self.set_busy(False)
         self.current_assignments = {
-            assignment["id"]: assignment
-            for assignment in assignments
-            if assignment.get("id")
+            item["id"]: item for item in assignments if item.get("id")
         }
         for item in self.assignment_tree.get_children():
             self.assignment_tree.delete(item)
-
         role_by_id = {role.id: role for role in self.roles}
         for assignment in assignments:
-            role = role_by_id.get(assignment.get("appRoleId"))
-            permission = role.value if role else assignment.get("appRoleId", "Unknown")
-            display = role.display_name if role else ""
+            role = role_by_id.get(str(assignment.get("appRoleId")))
             self.assignment_tree.insert(
                 "",
                 "end",
                 iid=assignment.get("id"),
-                values=(permission, display),
+                values=(
+                    role.value if role else assignment.get("appRoleId", "Unknown"),
+                    role.display_name if role else "",
+                ),
             )
-
         self.assigned_count_var.set(f"{len(assignments)} permission(s) assigned")
-        self.log(f"Current assignments loaded: {len(assignments)}.", "SUCCESS")
+
+    def show_assignment_confirmation(self, selected_roles: list[AppRole]) -> bool:
+        dialog = tk.Toplevel(self)
+        dialog.title("Confirm permission assignment")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.configure(background="#f3f4f6")
+
+        result = {"confirmed": False}
+        card = tk.Frame(dialog, background="white", highlightthickness=1, highlightbackground="#d1d5db")
+        card.pack(fill="both", expand=True, padx=20, pady=20)
+
+        header = tk.Frame(card, background="#1f2937")
+        header.pack(fill="x")
+        tk.Label(header, text="Confirm permission assignment", background="#1f2937", foreground="white",
+                 font=("Segoe UI", 16, "bold"), padx=18, pady=14).pack(anchor="w")
+
+        content = tk.Frame(card, background="white", padx=18, pady=16)
+        content.pack(fill="both", expand=True)
+        target = self.selected_sp or {}
+        details = (
+            f"Target: {target.get('displayName')}\n"
+            f"Type: {target.get('servicePrincipalType') or 'ServicePrincipal'}\n"
+            f"Object ID: {target.get('id')}\n"
+            f"App ID: {target.get('appId')}"
+        )
+        tk.Label(content, text=details, justify="left", anchor="w", background="white",
+                 font=("Segoe UI", 11)).pack(fill="x", anchor="w")
+
+        tk.Label(content, text=f"Permissions to assign ({len(selected_roles)}):", background="white",
+                 font=("Segoe UI", 11, "bold"), pady=10).pack(anchor="w")
+        list_frame = tk.Frame(content, background="white")
+        list_frame.pack(fill="both", expand=True)
+        permission_box = tk.Listbox(list_frame, height=min(10, max(3, len(selected_roles))),
+                                    background="#f9fafb", foreground="#111827",
+                                    selectbackground="#dbeafe", relief="flat",
+                                    font=("Menlo" if self.tk.call("tk", "windowingsystem") == "aqua" else "Consolas", 10))
+        permission_box.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=permission_box.yview)
+        scroll.pack(side="right", fill="y")
+        permission_box.configure(yscrollcommand=scroll.set)
+        for role in selected_roles:
+            permission_box.insert("end", role.value)
+
+        buttons = tk.Frame(card, background="#f9fafb", padx=18, pady=14)
+        buttons.pack(fill="x")
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        def confirm() -> None:
+            result["confirmed"] = True
+            dialog.destroy()
+
+        tk.Button(buttons, text="Cancel", command=cancel, background="#e5e7eb", foreground="#111827",
+                  activebackground="#d1d5db", relief="flat", padx=22, pady=8,
+                  font=("Segoe UI", 10, "bold")).pack(side="right")
+        tk.Button(buttons, text="Assign permissions", command=confirm, background="#2563eb", foreground="white",
+                  activebackground="#1d4ed8", activeforeground="white", relief="flat", padx=22, pady=8,
+                  font=("Segoe UI", 10, "bold")).pack(side="right", padx=(0, 10))
+
+        dialog.update_idletasks()
+        width = 680
+        height = min(650, 360 + len(selected_roles) * 22)
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.wait_window()
+        return result["confirmed"]
 
     def assign_permissions(self) -> None:
         if not self.selected_sp:
-            messagebox.showwarning("No target", "Select a Managed Identity first.")
+            messagebox.showwarning("No target", "Select a Managed Identity or Service Principal first.")
             return
-
-        target_sp = dict(self.selected_sp)
-        indexes = self.permission_list.curselection()
-        selected_roles = [self.filtered_roles[index] for index in indexes]
+        self.permission_selection_changed()
+        role_by_id = {role.id: role for role in self.roles}
+        selected_roles = [role_by_id[role_id] for role_id in self.selected_role_ids if role_id in role_by_id]
+        selected_roles.sort(key=lambda role: role.value.lower())
         if not selected_roles:
-            messagebox.showwarning(
-                "No permissions selected",
-                "Select at least one Microsoft Graph application permission.",
-            )
+            messagebox.showwarning("No permissions selected", "Select at least one permission.")
             return
-
-        permission_names = "\n".join(role.value for role in selected_roles)
-        confirmed = messagebox.askyesno(
-            "Confirm permission assignment",
-            f"Target:\n{target_sp.get('displayName')}\n\n"
-            f"Permissions:\n{permission_names}\n\nProceed?",
-        )
-        if not confirmed:
+        if not self.show_assignment_confirmation(selected_roles):
             return
+        target_id = self.selected_sp["id"]
 
-        self.set_busy(True)
+        def operation() -> dict[str, list[str]]:
+            existing = self.bridge.call("getAssignments", targetId=target_id)
+            existing_ids = {str(item.get("appRoleId")) for item in existing}
+            summary: dict[str, list[str]] = {"assigned": [], "skipped": [], "failed": []}
+            for role in selected_roles:
+                if role.id in existing_ids:
+                    summary["skipped"].append(role.value)
+                    continue
+                try:
+                    self.bridge.call("assignRole", targetId=target_id, appRoleId=role.id)
+                    summary["assigned"].append(role.value)
+                except Exception as exc:  # noqa: BLE001
+                    summary["failed"].append(f"{role.value}: {exc}")
+            return summary
 
-        def worker() -> None:
-            try:
-                existing = self.graph.get_graph_assignments(target_sp["id"])
-                existing_ids = {item.get("appRoleId") for item in existing}
-                summary = {"assigned": [], "skipped": [], "failed": []}
-
-                for role in selected_roles:
-                    if role.id in existing_ids:
-                        summary["skipped"].append(role.value)
-                        continue
-                    try:
-                        self.graph.assign_app_role(target_sp["id"], role.id)
-                        summary["assigned"].append(role.value)
-                    except Exception as exc:  # noqa: BLE001
-                        summary["failed"].append(f"{role.value}: {exc}")
-
-                self.ui_queue.put(("assignment_complete", summary))
-            except Exception as exc:  # noqa: BLE001
-                self.ui_queue.put(("error", str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
+        self.run_async("assignment_complete", operation)
 
     def on_assignment_complete(self, summary: dict[str, list[str]]) -> None:
         self.set_busy(False)
-
-        for permission in summary["assigned"]:
-            self.log(f"Assigned successfully: {permission}", "SUCCESS")
-        for permission in summary["skipped"]:
-            self.log(f"Already assigned: {permission}", "WARNING")
-        for failure in summary["failed"]:
-            self.log(f"Failed: {failure}", "ERROR")
-
+        for value in summary["assigned"]:
+            self.log(f"Assigned successfully: {value}", "SUCCESS")
+        for value in summary["skipped"]:
+            self.log(f"Already assigned: {value}", "WARNING")
+        for value in summary["failed"]:
+            self.log(f"Failed: {value}", "ERROR")
         messagebox.showinfo(
             "Graph App Role Manager",
             "Completed.\n\n"
@@ -714,88 +716,62 @@ class GraphAppRoleManager(tk.Tk):
             f"Already present: {len(summary['skipped'])}\n"
             f"Failed: {len(summary['failed'])}",
         )
+        if not summary["failed"]:
+            self.clear_permission_selection()
         self.refresh_assignments()
 
     def remove_permissions(self) -> None:
         if not self.selected_sp:
-            messagebox.showwarning("No target", "Select a Managed Identity first.")
+            messagebox.showwarning("No target", "Select a Managed Identity or Service Principal first.")
             return
-
-        target_sp = dict(self.selected_sp)
         selected_ids = list(self.assignment_tree.selection())
-        selected_assignments = [
-            self.current_assignments[assignment_id]
-            for assignment_id in selected_ids
-            if assignment_id in self.current_assignments
-        ]
-        if not selected_assignments:
-            messagebox.showwarning(
-                "No permissions selected",
-                "Select at least one assigned Microsoft Graph permission.",
-            )
+        if not selected_ids:
+            messagebox.showwarning("No permissions selected", "Select at least one assignment.")
             return
-
-        role_by_id = {role.id: role for role in self.roles}
-        permission_names = "\n".join(
-            role_by_id[assignment["appRoleId"]].value
-            if assignment.get("appRoleId") in role_by_id
-            else assignment.get("appRoleId", "Unknown")
-            for assignment in selected_assignments
-        )
-        confirmed = messagebox.askyesno(
-            "Confirm permission removal",
-            f"Target:\n{target_sp.get('displayName')}\n\n"
-            f"Permissions to remove:\n{permission_names}\n\nProceed?",
-        )
-        if not confirmed:
-            self.log("Permission removal cancelled by the user.", "WARNING")
+        if not messagebox.askyesno(
+            "Confirm removal",
+            f"Remove {len(selected_ids)} Microsoft Graph permission assignment(s) from\n"
+            f"{self.selected_sp.get('displayName')}?",
+        ):
             return
+        target_id = self.selected_sp["id"]
 
-        self.set_busy(True)
-
-        def worker() -> None:
-            summary = {"removed": [], "failed": []}
-            for assignment in selected_assignments:
-                role = role_by_id.get(assignment.get("appRoleId"))
-                permission = (
-                    role.value
-                    if role
-                    else assignment.get("appRoleId", "Unknown")
-                )
+        def operation() -> dict[str, list[str]]:
+            summary: dict[str, list[str]] = {"removed": [], "failed": []}
+            for assignment_id in selected_ids:
                 try:
-                    self.graph.remove_app_role_assignment(
-                        target_sp["id"],
-                        assignment["id"],
+                    self.bridge.call(
+                        "removeAssignment", targetId=target_id, assignmentId=assignment_id
                     )
-                    summary["removed"].append(permission)
+                    summary["removed"].append(assignment_id)
                 except Exception as exc:  # noqa: BLE001
-                    summary["failed"].append(f"{permission}: {exc}")
+                    summary["failed"].append(f"{assignment_id}: {exc}")
+            return summary
 
-            self.ui_queue.put(("removal_complete", summary))
-
-        threading.Thread(target=worker, daemon=True).start()
+        self.run_async("removal_complete", operation)
 
     def on_removal_complete(self, summary: dict[str, list[str]]) -> None:
         self.set_busy(False)
-
-        for permission in summary["removed"]:
-            self.log(f"Removed successfully: {permission}", "SUCCESS")
-        for failure in summary["failed"]:
-            self.log(f"Failed: {failure}", "ERROR")
-
         messagebox.showinfo(
             "Graph App Role Manager",
-            "Completed.\n\n"
-            f"Removed: {len(summary['removed'])}\n"
-            f"Failed: {len(summary['failed'])}",
+            f"Removed: {len(summary['removed'])}\nFailed: {len(summary['failed'])}",
         )
         self.refresh_assignments()
 
-
-def main() -> None:
-    app = GraphAppRoleManager()
-    app.mainloop()
+    def on_close(self) -> None:
+        try:
+            if self.connected:
+                self.bridge.call("disconnect", timeout=10)
+        except Exception:
+            pass
+        self.bridge.stop()
+        self.destroy()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        app = GraphAppRoleManager()
+        app.mainloop()
+    except tk.TclError as exc:
+        print(f"Tkinter could not start: {exc}", file=sys.stderr)
+        sys.exit(1)
