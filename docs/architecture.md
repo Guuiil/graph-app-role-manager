@@ -33,12 +33,14 @@ The Windows version uses Microsoft Graph PowerShell:
 
 The Python version uses:
 
-- MSAL device-code authentication through a tenant-owned public-client app registration;
-- direct Microsoft Graph `v1.0` REST requests;
-- Tkinter for the desktop interface.
+- Tkinter for the desktop interface;
+- a persistent PowerShell 7 child process and a line-oriented JSON protocol;
+- `Connect-MgGraph` for interactive authentication;
+- `Invoke-MgGraphRequest` for Microsoft Graph `v1.0` operations.
 
-The access token is kept in process memory only. The application does not create a token
-cache file.
+The PowerShell authentication context is process-scoped and disconnected when the
+interface closes. The application does not create its own token cache or handle raw access
+tokens in Python.
 
 ## Safety boundaries
 

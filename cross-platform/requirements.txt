@@ -1,2 +1,2 @@
-msal>=1.31,<2
-requests>=2.32,<3
+# Graph App Role Manager v1 uses only the Python standard library.
+# PowerShell 7 and Microsoft.Graph.Authentication are runtime prerequisites.

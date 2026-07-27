@@ -2,6 +2,8 @@
 
 [English version](README.md)
 
+**Version multiplateforme actuelle : v1.0**
+
 Graph App Role Manager est une interface graphique permettant de consulter, d'attribuer et
 de supprimer les permissions d'application Microsoft Graph d'une identité managée ou d'un
 Service Principal.
@@ -22,6 +24,8 @@ Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le
 - Affichage des App Roles Graph déjà attribués à l'identité sélectionnée.
 - Attribution de plusieurs permissions en évitant les doublons.
 - Suppression des permissions sélectionnées après confirmation explicite.
+- Filtrage local de la liste des identités du tenant ou recherche par nom côté serveur.
+- Conservation des permissions sélectionnées pendant le filtrage.
 - Journal d'activité et récapitulatif de chaque opération.
 - Aucun mot de passe, secret, certificat ou jeton d'accès enregistré sur le disque.
 
@@ -30,7 +34,10 @@ Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le
 | Version | Usage conseillé | Authentification | Prérequis |
 | --- | --- | --- | --- |
 | [Interface PowerShell Windows](windows/Graph-App-Role-Manager.ps1) | Poste d'administration Windows | `Connect-MgGraph` interactif | Windows, PowerShell 7+, modules Microsoft Graph |
-| [Interface Python multiplateforme](cross-platform/graph_app_role_manager.py) | Windows, macOS ou Linux | Device Code Flow MSAL | Python 3.10+, Tkinter, App Registration de type client public |
+| [Interface Python multiplateforme v1.0](cross-platform/graph_app_role_manager.py) | Windows, macOS ou Linux | `Connect-MgGraph` interactif via le backend fourni | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+
+La version multiplateforme ne nécessite ni App Registration dédiée, ni Client ID, ni
+secret, ni certificat, ni paquet Python supplémentaire.
 
 ## Permissions déléguées requises
 
@@ -57,16 +64,13 @@ courant, mais demande une confirmation préalable.
 ### Version multiplateforme
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r cross-platform/requirements.txt
+pwsh -NoProfile -Command "Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
 python cross-platform/graph_app_role_manager.py
 ```
 
-Sous Windows, activez l'environnement avec `.venv\Scripts\Activate.ps1`.
-
-La version Python demande le tenant ID ou son domaine ainsi que le Client ID d'une App
-Registration configurée comme client public. La procédure se trouve dans le
+Conservez `graph_app_role_manager.py`, `graph_backend.ps1` et
+`graph-app-role-manager-icon.png` dans le même dossier. Le champ du tenant est facultatif.
+Les prérequis par système et le dépannage se trouvent dans le
 [guide multiplateforme](docs/cross-platform.md).
 
 ## Utilisation prudente

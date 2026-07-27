@@ -36,8 +36,8 @@ a confirmation dialog. It does not remove permissions from other resource APIs.
 
 - The Windows version uses the Microsoft Graph PowerShell authentication context for the
   current process.
-- The Python version keeps the MSAL access token in memory and does not configure persistent
-  token caching.
+- The cross-platform Python interface uses a process-scoped Microsoft Graph PowerShell
+  authentication context in its bundled backend.
 - Neither version asks for or stores a password, client secret, or certificate.
 
 Do not publish screenshots or logs containing tenant identifiers, account names, object IDs,
