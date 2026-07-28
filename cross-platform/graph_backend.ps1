@@ -84,7 +84,45 @@ function Handle-Command {
                 $params.TenantId = $tenantId
             }
 
-            Connect-MgGraph @params | Out-Null
+            if ($IsWindows) {
+                # Microsoft Graph PowerShell uses WAM on Windows. This backend is
+                # intentionally headless, so it cannot provide WAM with a parent
+                # window handle. Device code flow is the supported alternative.
+                $params.UseDeviceCode = $true
+                Connect-MgGraph @params | ForEach-Object {
+                    $message = [string]$_
+                    if (-not [string]::IsNullOrWhiteSpace($message)) {
+                        $uriMatch = [regex]::Match($message, 'https://[^\s]+')
+                        $codeMatch = [regex]::Match(
+                            $message,
+                            '(?i)\bcode\s+([A-Z0-9]{8,12})\b'
+                        )
+                        if ($uriMatch.Success -and $codeMatch.Success) {
+                            Send-ProtocolResponse @{
+                                ok = $true
+                                event = 'deviceCode'
+                                requestId = [string]$Request.requestId
+                                data = @{
+                                    verificationUri = $uriMatch.Value.TrimEnd('.', ',', ';')
+                                    userCode = $codeMatch.Groups[1].Value.ToUpperInvariant()
+                                    message = $message
+                                }
+                            }
+                        }
+                        else {
+                            Send-ProtocolResponse @{
+                                ok = $true
+                                event = 'authMessage'
+                                requestId = [string]$Request.requestId
+                                data = @{ message = $message }
+                            }
+                        }
+                    }
+                }
+            }
+            else {
+                Connect-MgGraph @params | Out-Null
+            }
             $context = Get-MgContext
             $script:GraphServicePrincipal = $null
             $script:GraphRoles = @()

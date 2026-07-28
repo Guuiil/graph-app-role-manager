@@ -2,7 +2,7 @@
 
 [English version](README.md)
 
-**Version multiplateforme actuelle : v1.0**
+**Version multiplateforme actuelle : v1.1**
 
 Graph App Role Manager est une interface graphique permettant de consulter, d'attribuer et
 de supprimer les permissions d'application Microsoft Graph d'une identité managée ou d'un
@@ -26,6 +26,8 @@ Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le
 - Suppression des permissions sélectionnées après confirmation explicite.
 - Filtrage local de la liste des identités du tenant ou recherche par nom côté serveur.
 - Conservation des permissions sélectionnées pendant le filtrage.
+- Dialogue dédié au Device Code sous Windows pour éviter les erreurs de Window Handle WAM.
+- Interface multiplateforme modernisée avec des contrôles et tableaux plus lisibles.
 - Journal d'activité et récapitulatif de chaque opération.
 - Aucun mot de passe, secret, certificat ou jeton d'accès enregistré sur le disque.
 
@@ -34,7 +36,7 @@ Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le
 | Version | Usage conseillé | Authentification | Prérequis |
 | --- | --- | --- | --- |
 | [Interface PowerShell Windows](windows/Graph-App-Role-Manager.ps1) | Poste d'administration Windows | `Connect-MgGraph` interactif | Windows, PowerShell 7+, modules Microsoft Graph |
-| [Interface Python multiplateforme v1.0](cross-platform/graph_app_role_manager.py) | Windows, macOS ou Linux | `Connect-MgGraph` interactif via le backend fourni | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+| [Interface Python multiplateforme v1.1](cross-platform/graph_app_role_manager.py) | Windows, macOS ou Linux | Device Code sous Windows ; navigateur interactif sous macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
 
 La version multiplateforme ne nécessite ni App Registration dédiée, ni Client ID, ni
 secret, ni certificat, ni paquet Python supplémentaire.

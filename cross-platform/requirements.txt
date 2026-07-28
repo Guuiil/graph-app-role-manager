@@ -1,2 +1,2 @@
-# Graph App Role Manager v1 uses only the Python standard library.
+# Graph App Role Manager v1.1 uses only the Python standard library.
 # PowerShell 7 and Microsoft.Graph.Authentication are runtime prerequisites.

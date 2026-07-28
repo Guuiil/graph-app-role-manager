@@ -1,4 +1,4 @@
-# Cross-platform v1.0 setup
+# Cross-platform v1.1 setup
 
 ## Requirements
 
@@ -40,17 +40,21 @@ The Python standard library is sufficient, so creating a virtual environment is 
 
 ## Authenticate
 
-Select **Connect to Microsoft Graph**. The bundled PowerShell backend starts an interactive
-`Connect-MgGraph` sign-in and requests:
+Select **Connect to Microsoft Graph**. The bundled PowerShell backend requests:
 
 - `Application.Read.All`
 - `AppRoleAssignment.ReadWrite.All`
+
+On Windows, the GUI opens Microsoft's device-login page and displays the temporary code in
+an in-app dialog. This avoids the Web Account Manager parent-window requirement that applies
+to recent Microsoft Graph PowerShell versions. On macOS and Linux, `Connect-MgGraph` keeps
+using interactive browser authentication.
 
 Leave the tenant field empty for the normal organizational sign-in flow, or enter a tenant
 ID or verified tenant domain to require a specific tenant. The authentication context is
 limited to the backend process and is disconnected when the interface closes.
 
-## Use the v1.0 interface
+## Use the v1.1 interface
 
 1. Connect with an authorized administrator account.
 2. Select an identity from the list loaded after sign-in, type to filter it locally, or use
@@ -79,8 +83,10 @@ Disconnect-MgGraph
 ```
 
 - If `pwsh` is not found, install PowerShell 7 and restart the application.
-- If the browser does not open, run the independent authentication test above and inspect
-  its full error.
+- If the browser does not open on Windows, select **Open browser** in the device-code dialog
+  or browse to the displayed verification URL.
+- If Windows reports that a WAM window handle is required, confirm that both
+  `graph_app_role_manager.py` and `graph_backend.ps1` come from v1.1 or later.
 - `AADSTS65001` usually means administrator consent has not been granted.
 - HTTP `403` indicates missing Graph permission, an insufficient Entra administrator role,
   an organizational policy restriction, or a protected target.
