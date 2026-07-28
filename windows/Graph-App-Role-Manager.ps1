@@ -29,6 +29,10 @@ SECURITY
 Grant only the permissions needed by the target workload.
 #>
 
+param(
+    [switch]$NoGui
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -116,11 +120,15 @@ function Ensure-GraphModules {
         'Microsoft.Graph.Applications'
     )
 
-    $missingModules = foreach ($moduleName in $requiredModules) {
-        if (-not (Get-Module -ListAvailable -Name $moduleName)) {
-            $moduleName
+    # Always preserve collection semantics. Without @(...), PowerShell unwraps a
+    # single missing module to a scalar string and StrictMode rejects .Count.
+    $missingModules = @(
+        foreach ($moduleName in $requiredModules) {
+            if (-not (Get-Module -ListAvailable -Name $moduleName)) {
+                $moduleName
+            }
         }
-    }
+    )
 
     if ($missingModules.Count -gt 0) {
         $message = @"
@@ -360,7 +368,6 @@ function Search-TargetServicePrincipals {
             $sp.Id
         )
 
-        $comboItem = New-Object System.Windows.Forms.ComboBox
         # ComboBox cannot directly host controls; use a PSObject with ToString().
         $item = [pscustomobject]@{
             Text = $label
@@ -562,162 +569,211 @@ Remove these app role assignments?
 # FORM
 # ---------------------------------------------------------------------------
 
+$colorCanvas = [System.Drawing.Color]::FromArgb(243, 246, 250)
+$colorHeader = [System.Drawing.Color]::FromArgb(28, 38, 53)
+$colorBlue = [System.Drawing.Color]::FromArgb(47, 128, 237)
+$colorGreen = [System.Drawing.Color]::FromArgb(22, 163, 74)
+$colorRed = [System.Drawing.Color]::FromArgb(190, 45, 45)
+$colorMuted = [System.Drawing.Color]::FromArgb(96, 108, 126)
+
+function Set-PrimaryButtonStyle {
+    param(
+        [Parameter(Mandatory)]$Button,
+        [System.Drawing.Color]$BackColor = $colorBlue
+    )
+
+    $Button.BackColor = $BackColor
+    $Button.ForeColor = [System.Drawing.Color]::White
+    $Button.FlatStyle = 'Flat'
+    $Button.FlatAppearance.BorderSize = 0
+    $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $Button.Margin = New-Object System.Windows.Forms.Padding(6)
+}
+
+function New-FieldLabel {
+    param([Parameter(Mandatory)][string]$Text)
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $Text
+    $label.AutoSize = $true
+    $label.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9)
+    $label.ForeColor = [System.Drawing.Color]::FromArgb(55, 65, 81)
+    $label.Anchor = 'Left'
+    return $label
+}
+
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'Graph App Role Manager'
+$form.Text = 'Graph App Role Manager — Native Windows'
 $form.StartPosition = 'CenterScreen'
-$form.Size = New-Object System.Drawing.Size(1180, 820)
-$form.MinimumSize = New-Object System.Drawing.Size(1050, 720)
-$form.BackColor = [System.Drawing.Color]::FromArgb(245, 247, 250)
+$form.Size = New-Object System.Drawing.Size(1280, 860)
+$form.MinimumSize = New-Object System.Drawing.Size(1080, 740)
+$form.BackColor = $colorCanvas
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
 $form.AutoScaleMode = 'Dpi'
 
-$headerPanel = New-Object System.Windows.Forms.Panel
-$headerPanel.Dock = 'Top'
-$headerPanel.Height = 86
-$headerPanel.BackColor = [System.Drawing.Color]::FromArgb(31, 41, 55)
-$form.Controls.Add($headerPanel)
+$rootLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$rootLayout.Dock = 'Fill'
+$rootLayout.ColumnCount = 1
+$rootLayout.RowCount = 2
+$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 96)))
+$rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+$form.Controls.Add($rootLayout)
+
+$headerPanel = New-Object System.Windows.Forms.TableLayoutPanel
+$headerPanel.Dock = 'Fill'
+$headerPanel.BackColor = $colorHeader
+$headerPanel.ColumnCount = 2
+$headerPanel.RowCount = 1
+$headerPanel.Padding = New-Object System.Windows.Forms.Padding(24, 14, 24, 14)
+$headerPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+$headerPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 250)))
+$rootLayout.Controls.Add($headerPanel, 0, 0)
+
+$titlePanel = New-Object System.Windows.Forms.TableLayoutPanel
+$titlePanel.Dock = 'Fill'
+$titlePanel.ColumnCount = 1
+$titlePanel.RowCount = 2
+$titlePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 62)))
+$titlePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 38)))
+$headerPanel.Controls.Add($titlePanel, 0, 0)
 
 $lblTitle = New-Object System.Windows.Forms.Label
 $lblTitle.Text = 'Graph App Role Manager'
 $lblTitle.ForeColor = [System.Drawing.Color]::White
 $lblTitle.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 20)
 $lblTitle.AutoSize = $true
-$lblTitle.Location = New-Object System.Drawing.Point(24, 14)
-$headerPanel.Controls.Add($lblTitle)
+$lblTitle.Anchor = 'Left'
+$titlePanel.Controls.Add($lblTitle, 0, 0)
 
 $lblSubtitle = New-Object System.Windows.Forms.Label
-$lblSubtitle.Text = 'Assign Microsoft Graph application permissions to a Managed Identity'
-$lblSubtitle.ForeColor = [System.Drawing.Color]::FromArgb(209, 213, 219)
+$lblSubtitle.Text = 'Native Windows alternative · Assign Microsoft Graph application permissions'
+$lblSubtitle.ForeColor = [System.Drawing.Color]::FromArgb(195, 205, 219)
 $lblSubtitle.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 $lblSubtitle.AutoSize = $true
-$lblSubtitle.Location = New-Object System.Drawing.Point(27, 52)
-$headerPanel.Controls.Add($lblSubtitle)
+$lblSubtitle.Anchor = 'Left'
+$titlePanel.Controls.Add($lblSubtitle, 0, 1)
 
 $btnConnect = New-Object System.Windows.Forms.Button
 $btnConnect.Text = 'Connect to Microsoft Graph'
-$btnConnect.Size = New-Object System.Drawing.Size(220, 36)
-$btnConnect.Anchor = 'Top,Right'
-$btnConnect.Location = New-Object System.Drawing.Point(930, 24)
-$btnConnect.BackColor = [System.Drawing.Color]::FromArgb(37, 99, 235)
-$btnConnect.ForeColor = [System.Drawing.Color]::White
-$btnConnect.FlatStyle = 'Flat'
-$btnConnect.FlatAppearance.BorderSize = 0
-$headerPanel.Controls.Add($btnConnect)
+$btnConnect.Dock = 'Fill'
+$btnConnect.Margin = New-Object System.Windows.Forms.Padding(6, 16, 0, 16)
+Set-PrimaryButtonStyle -Button $btnConnect
+$headerPanel.Controls.Add($btnConnect, 1, 0)
 
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
 $tabs.Padding = New-Object System.Drawing.Point(18, 7)
-$form.Controls.Add($tabs)
-$tabs.BringToFront()
+$tabs.Margin = New-Object System.Windows.Forms.Padding(12)
+$rootLayout.Controls.Add($tabs, 0, 1)
 
 # ---------------------------------------------------------------------------
 # TAB 1 - ASSIGN
 # ---------------------------------------------------------------------------
 
 $tabAssign = New-Object System.Windows.Forms.TabPage
-$tabAssign.Text = 'Assign permissions'
-$tabAssign.BackColor = $form.BackColor
-$tabAssign.Padding = New-Object System.Windows.Forms.Padding(18)
+$tabAssign.Text = 'Manage permissions'
+$tabAssign.BackColor = $colorCanvas
+$tabAssign.Padding = New-Object System.Windows.Forms.Padding(14)
 $tabs.TabPages.Add($tabAssign)
 
-$splitMain = New-Object System.Windows.Forms.SplitContainer
-$splitMain.Dock = 'Fill'
-$splitMain.Orientation = 'Horizontal'
-$splitMain.SplitterDistance = 250
-$splitMain.IsSplitterFixed = $false
-$tabAssign.Controls.Add($splitMain)
+$mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$mainLayout.Dock = 'Fill'
+$mainLayout.ColumnCount = 1
+$mainLayout.RowCount = 2
+$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 235)))
+$mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+$tabAssign.Controls.Add($mainLayout)
 
-# Identity group
 $grpIdentity = New-Object System.Windows.Forms.GroupBox
-$grpIdentity.Text = '1. Select the target Managed Identity'
+$grpIdentity.Text = '1. Choose the target identity'
 $grpIdentity.Dock = 'Fill'
-$grpIdentity.Padding = New-Object System.Windows.Forms.Padding(14)
-$splitMain.Panel1.Controls.Add($grpIdentity)
+$grpIdentity.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 14)
+$grpIdentity.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+$mainLayout.Controls.Add($grpIdentity, 0, 0)
 
-$lblIdentitySearch = New-Object System.Windows.Forms.Label
-$lblIdentitySearch.Text = 'Display name'
-$lblIdentitySearch.AutoSize = $true
-$lblIdentitySearch.Location = New-Object System.Drawing.Point(18, 35)
-$grpIdentity.Controls.Add($lblIdentitySearch)
+$identityLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$identityLayout.Dock = 'Fill'
+$identityLayout.ColumnCount = 3
+$identityLayout.RowCount = 4
+$identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+$identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 130)))
+$identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 0)))
+$identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 27)))
+$identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 38)))
+$identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 57)))
+$identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+$grpIdentity.Controls.Add($identityLayout)
+
+$lblIdentitySearch = New-FieldLabel -Text 'Managed identity or service-principal display name'
+$identityLayout.Controls.Add($lblIdentitySearch, 0, 0)
 
 $txtIdentityName = New-Object System.Windows.Forms.TextBox
-$txtIdentityName.Text = 'AA-ModernWorkplace-Reporting'
-$txtIdentityName.Location = New-Object System.Drawing.Point(18, 58)
-$txtIdentityName.Size = New-Object System.Drawing.Size(520, 27)
-$grpIdentity.Controls.Add($txtIdentityName)
+$txtIdentityName.PlaceholderText = 'Enter a full or partial display name'
+$txtIdentityName.Dock = 'Fill'
+$txtIdentityName.Margin = New-Object System.Windows.Forms.Padding(0, 3, 8, 6)
+$identityLayout.Controls.Add($txtIdentityName, 0, 1)
 
 $btnSearchIdentity = New-Object System.Windows.Forms.Button
 $btnSearchIdentity.Text = 'Search'
-$btnSearchIdentity.Location = New-Object System.Drawing.Point(550, 56)
-$btnSearchIdentity.Size = New-Object System.Drawing.Size(105, 30)
-$grpIdentity.Controls.Add($btnSearchIdentity)
+$btnSearchIdentity.Dock = 'Fill'
+$btnSearchIdentity.Margin = New-Object System.Windows.Forms.Padding(4, 2, 0, 5)
+Set-PrimaryButtonStyle -Button $btnSearchIdentity
+$identityLayout.Controls.Add($btnSearchIdentity, 1, 1)
 
-$lblSearchResults = New-Object System.Windows.Forms.Label
-$lblSearchResults.Text = 'Matching service principals'
-$lblSearchResults.AutoSize = $true
-$lblSearchResults.Location = New-Object System.Drawing.Point(18, 98)
-$grpIdentity.Controls.Add($lblSearchResults)
+$resultsLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$resultsLayout.Dock = 'Fill'
+$resultsLayout.ColumnCount = 1
+$resultsLayout.RowCount = 2
+$resultsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 23)))
+$resultsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+$identityLayout.SetColumnSpan($resultsLayout, 2)
+$identityLayout.Controls.Add($resultsLayout, 0, 2)
+
+$lblSearchResults = New-FieldLabel -Text 'Matching identities'
+$resultsLayout.Controls.Add($lblSearchResults, 0, 0)
 
 $cmbIdentityResults = New-Object System.Windows.Forms.ComboBox
 $cmbIdentityResults.DropDownStyle = 'DropDownList'
-$cmbIdentityResults.Location = New-Object System.Drawing.Point(18, 121)
-$cmbIdentityResults.Size = New-Object System.Drawing.Size(850, 28)
-$cmbIdentityResults.Anchor = 'Top,Left,Right'
-$grpIdentity.Controls.Add($cmbIdentityResults)
+$cmbIdentityResults.Dock = 'Fill'
+$cmbIdentityResults.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 4)
+$resultsLayout.Controls.Add($cmbIdentityResults, 0, 1)
 
-$summaryPanel = New-Object System.Windows.Forms.Panel
-$summaryPanel.Location = New-Object System.Drawing.Point(18, 162)
-$summaryPanel.Size = New-Object System.Drawing.Size(1080, 67)
-$summaryPanel.Anchor = 'Top,Left,Right'
+$summaryPanel = New-Object System.Windows.Forms.TableLayoutPanel
+$summaryPanel.Dock = 'Fill'
 $summaryPanel.BackColor = [System.Drawing.Color]::White
-$summaryPanel.BorderStyle = 'FixedSingle'
-$grpIdentity.Controls.Add($summaryPanel)
+$summaryPanel.CellBorderStyle = 'Single'
+$summaryPanel.ColumnCount = 4
+$summaryPanel.RowCount = 2
+$summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 85)))
+$summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 50)))
+$summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 85)))
+$summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 50)))
+$summaryPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 50)))
+$summaryPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 50)))
+$identityLayout.SetColumnSpan($summaryPanel, 2)
+$identityLayout.Controls.Add($summaryPanel, 0, 3)
 
-$lblIdentityName = New-Object System.Windows.Forms.Label
-$lblIdentityName.Text = 'Name:'
-$lblIdentityName.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9)
-$lblIdentityName.Location = New-Object System.Drawing.Point(12, 9)
-$lblIdentityName.AutoSize = $true
-$summaryPanel.Controls.Add($lblIdentityName)
+$lblIdentityName = New-FieldLabel -Text 'Name'
+$lblIdentityNameValue = New-FieldLabel -Text '-'
+$lblIdentityNameValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$lblObjectId = New-FieldLabel -Text 'Object ID'
+$lblObjectIdValue = New-FieldLabel -Text '-'
+$lblObjectIdValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$lblAppId = New-FieldLabel -Text 'App ID'
+$lblAppIdValue = New-FieldLabel -Text '-'
+$lblAppIdValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$summaryPanel.Controls.Add($lblIdentityName, 0, 0)
+$summaryPanel.Controls.Add($lblIdentityNameValue, 1, 0)
+$summaryPanel.Controls.Add($lblObjectId, 0, 1)
+$summaryPanel.Controls.Add($lblObjectIdValue, 1, 1)
+$summaryPanel.Controls.Add($lblAppId, 2, 1)
+$summaryPanel.Controls.Add($lblAppIdValue, 3, 1)
+$summaryPanel.SetColumnSpan($lblIdentityNameValue, 3)
 
-$lblIdentityNameValue = New-Object System.Windows.Forms.Label
-$lblIdentityNameValue.Text = '-'
-$lblIdentityNameValue.Location = New-Object System.Drawing.Point(80, 9)
-$lblIdentityNameValue.AutoSize = $true
-$summaryPanel.Controls.Add($lblIdentityNameValue)
-
-$lblObjectId = New-Object System.Windows.Forms.Label
-$lblObjectId.Text = 'Object ID:'
-$lblObjectId.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9)
-$lblObjectId.Location = New-Object System.Drawing.Point(12, 35)
-$lblObjectId.AutoSize = $true
-$summaryPanel.Controls.Add($lblObjectId)
-
-$lblObjectIdValue = New-Object System.Windows.Forms.Label
-$lblObjectIdValue.Text = '-'
-$lblObjectIdValue.Location = New-Object System.Drawing.Point(80, 35)
-$lblObjectIdValue.AutoSize = $true
-$summaryPanel.Controls.Add($lblObjectIdValue)
-
-$lblAppId = New-Object System.Windows.Forms.Label
-$lblAppId.Text = 'App ID:'
-$lblAppId.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9)
-$lblAppId.Location = New-Object System.Drawing.Point(570, 35)
-$lblAppId.AutoSize = $true
-$summaryPanel.Controls.Add($lblAppId)
-
-$lblAppIdValue = New-Object System.Windows.Forms.Label
-$lblAppIdValue.Text = '-'
-$lblAppIdValue.Location = New-Object System.Drawing.Point(630, 35)
-$lblAppIdValue.AutoSize = $true
-$summaryPanel.Controls.Add($lblAppIdValue)
-
-# Bottom permissions area
 $splitPermissions = New-Object System.Windows.Forms.SplitContainer
 $splitPermissions.Dock = 'Fill'
-$splitPermissions.SplitterDistance = 610
-$splitPermissions.IsSplitterFixed = $false
-$splitMain.Panel2.Controls.Add($splitPermissions)
+$splitPermissions.SplitterDistance = 690
+$mainLayout.Controls.Add($splitPermissions, 0, 1)
 
 $grpPermissions = New-Object System.Windows.Forms.GroupBox
 $grpPermissions.Text = '2. Select Microsoft Graph application permissions'
@@ -725,46 +781,52 @@ $grpPermissions.Dock = 'Fill'
 $grpPermissions.Padding = New-Object System.Windows.Forms.Padding(14)
 $splitPermissions.Panel1.Controls.Add($grpPermissions)
 
+$permissionLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$permissionLayout.Dock = 'Fill'
+$permissionLayout.ColumnCount = 2
+$permissionLayout.RowCount = 3
+$permissionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+$permissionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 170)))
+$permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 42)))
+$permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+$permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 44)))
+$grpPermissions.Controls.Add($permissionLayout)
+
 $txtPermissionFilter = New-Object System.Windows.Forms.TextBox
 $txtPermissionFilter.PlaceholderText = 'Filter permissions, e.g. DeviceManagement or Sites'
-$txtPermissionFilter.Location = New-Object System.Drawing.Point(18, 32)
-$txtPermissionFilter.Size = New-Object System.Drawing.Size(410, 27)
-$txtPermissionFilter.Anchor = 'Top,Left,Right'
-$grpPermissions.Controls.Add($txtPermissionFilter)
+$txtPermissionFilter.Dock = 'Fill'
+$txtPermissionFilter.Margin = New-Object System.Windows.Forms.Padding(0, 5, 8, 7)
+$permissionLayout.Controls.Add($txtPermissionFilter, 0, 0)
 
 $btnLoadPermissions = New-Object System.Windows.Forms.Button
-$btnLoadPermissions.Text = 'Load permissions'
-$btnLoadPermissions.Location = New-Object System.Drawing.Point(440, 30)
-$btnLoadPermissions.Size = New-Object System.Drawing.Size(140, 30)
-$btnLoadPermissions.Anchor = 'Top,Right'
-$grpPermissions.Controls.Add($btnLoadPermissions)
+$btnLoadPermissions.Text = 'Reload permissions'
+$btnLoadPermissions.Dock = 'Fill'
+$btnLoadPermissions.Margin = New-Object System.Windows.Forms.Padding(4, 3, 0, 6)
+Set-PrimaryButtonStyle -Button $btnLoadPermissions
+$permissionLayout.Controls.Add($btnLoadPermissions, 1, 0)
 
 $checkedPermissions = New-Object System.Windows.Forms.CheckedListBox
 $checkedPermissions.CheckOnClick = $true
-$checkedPermissions.Location = New-Object System.Drawing.Point(18, 72)
-$checkedPermissions.Size = New-Object System.Drawing.Size(562, 310)
-$checkedPermissions.Anchor = 'Top,Bottom,Left,Right'
+$checkedPermissions.Dock = 'Fill'
 $checkedPermissions.HorizontalScrollbar = $true
 $checkedPermissions.DisplayMember = 'Text'
-$grpPermissions.Controls.Add($checkedPermissions)
+$checkedPermissions.BackColor = [System.Drawing.Color]::White
+$permissionLayout.SetColumnSpan($checkedPermissions, 2)
+$permissionLayout.Controls.Add($checkedPermissions, 0, 1)
 
 $lblPermissionCount = New-Object System.Windows.Forms.Label
 $lblPermissionCount.Text = '0 permission(s) displayed'
 $lblPermissionCount.AutoSize = $true
-$lblPermissionCount.Location = New-Object System.Drawing.Point(18, 390)
-$lblPermissionCount.Anchor = 'Bottom,Left'
-$grpPermissions.Controls.Add($lblPermissionCount)
+$lblPermissionCount.ForeColor = $colorMuted
+$lblPermissionCount.Anchor = 'Left'
+$permissionLayout.Controls.Add($lblPermissionCount, 0, 2)
 
 $btnAssign = New-Object System.Windows.Forms.Button
-$btnAssign.Text = 'Assign selected permissions'
-$btnAssign.Location = New-Object System.Drawing.Point(365, 384)
-$btnAssign.Size = New-Object System.Drawing.Size(215, 34)
-$btnAssign.Anchor = 'Bottom,Right'
-$btnAssign.BackColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
-$btnAssign.ForeColor = [System.Drawing.Color]::White
-$btnAssign.FlatStyle = 'Flat'
-$btnAssign.FlatAppearance.BorderSize = 0
-$grpPermissions.Controls.Add($btnAssign)
+$btnAssign.Text = 'Assign selected'
+$btnAssign.Dock = 'Fill'
+$btnAssign.Margin = New-Object System.Windows.Forms.Padding(4, 6, 0, 0)
+Set-PrimaryButtonStyle -Button $btnAssign -BackColor $colorGreen
+$permissionLayout.Controls.Add($btnAssign, 1, 2)
 
 $grpCurrent = New-Object System.Windows.Forms.GroupBox
 $grpCurrent.Text = '3. Current Microsoft Graph assignments'
@@ -772,52 +834,62 @@ $grpCurrent.Dock = 'Fill'
 $grpCurrent.Padding = New-Object System.Windows.Forms.Padding(14)
 $splitPermissions.Panel2.Controls.Add($grpCurrent)
 
-$btnRefreshAssignments = New-Object System.Windows.Forms.Button
-$btnRefreshAssignments.Text = 'Refresh'
-$btnRefreshAssignments.Location = New-Object System.Drawing.Point(18, 30)
-$btnRefreshAssignments.Size = New-Object System.Drawing.Size(100, 30)
-$grpCurrent.Controls.Add($btnRefreshAssignments)
+$assignmentLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$assignmentLayout.Dock = 'Fill'
+$assignmentLayout.ColumnCount = 2
+$assignmentLayout.RowCount = 3
+$assignmentLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+$assignmentLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 120)))
+$assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 42)))
+$assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+$assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 44)))
+$grpCurrent.Controls.Add($assignmentLayout)
 
 $lblAssignedCount = New-Object System.Windows.Forms.Label
-$lblAssignedCount.Text = '0 Microsoft Graph permission(s) assigned'
+$lblAssignedCount.Text = '0 permission(s) assigned'
+$lblAssignedCount.ForeColor = $colorMuted
 $lblAssignedCount.AutoSize = $true
-$lblAssignedCount.Location = New-Object System.Drawing.Point(132, 37)
-$grpCurrent.Controls.Add($lblAssignedCount)
+$lblAssignedCount.Anchor = 'Left'
+$assignmentLayout.Controls.Add($lblAssignedCount, 0, 0)
+
+$btnRefreshAssignments = New-Object System.Windows.Forms.Button
+$btnRefreshAssignments.Text = 'Refresh'
+$btnRefreshAssignments.Dock = 'Fill'
+$btnRefreshAssignments.Margin = New-Object System.Windows.Forms.Padding(4, 3, 0, 6)
+Set-PrimaryButtonStyle -Button $btnRefreshAssignments
+$assignmentLayout.Controls.Add($btnRefreshAssignments, 1, 0)
 
 $gridAssignments = New-Object System.Windows.Forms.DataGridView
-$gridAssignments.Location = New-Object System.Drawing.Point(18, 72)
-$gridAssignments.Size = New-Object System.Drawing.Size(465, 304)
-$gridAssignments.Anchor = 'Top,Bottom,Left,Right'
+$gridAssignments.Dock = 'Fill'
 $gridAssignments.AllowUserToAddRows = $false
 $gridAssignments.AllowUserToDeleteRows = $false
 $gridAssignments.AllowUserToResizeRows = $false
 $gridAssignments.ReadOnly = $true
 $gridAssignments.RowHeadersVisible = $false
 $gridAssignments.SelectionMode = 'FullRowSelect'
+$gridAssignments.MultiSelect = $true
 $gridAssignments.AutoSizeColumnsMode = 'Fill'
 $gridAssignments.BackgroundColor = [System.Drawing.Color]::White
+$gridAssignments.BorderStyle = 'Fixed3D'
+$gridAssignments.EnableHeadersVisualStyles = $false
+$gridAssignments.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(229, 235, 244)
+$gridAssignments.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(31, 41, 55)
+$gridAssignments.DefaultCellStyle.SelectionBackColor = $colorBlue
+$assignmentLayout.SetColumnSpan($gridAssignments, 2)
+$assignmentLayout.Controls.Add($gridAssignments, 0, 1)
 [void]$gridAssignments.Columns.Add('Permission', 'Permission')
 [void]$gridAssignments.Columns.Add('DisplayName', 'Display name')
 [void]$gridAssignments.Columns.Add('RoleId', 'App role ID')
 [void]$gridAssignments.Columns.Add('AssignmentId', 'Assignment ID')
 $gridAssignments.Columns['RoleId'].Visible = $false
 $gridAssignments.Columns['AssignmentId'].Visible = $false
-$grpCurrent.Controls.Add($gridAssignments)
 
 $btnRemove = New-Object System.Windows.Forms.Button
 $btnRemove.Text = 'Remove selected'
-$btnRemove.Location = New-Object System.Drawing.Point(303, 384)
-$btnRemove.Size = New-Object System.Drawing.Size(180, 34)
-$btnRemove.Anchor = 'Bottom,Right'
-$btnRemove.BackColor = [System.Drawing.Color]::FromArgb(185, 28, 28)
-$btnRemove.ForeColor = [System.Drawing.Color]::White
-$btnRemove.FlatStyle = 'Flat'
-$btnRemove.FlatAppearance.BorderSize = 0
-$grpCurrent.Controls.Add($btnRemove)
-
-# ---------------------------------------------------------------------------
-# TAB 2 - LOG
-# ---------------------------------------------------------------------------
+$btnRemove.Dock = 'Fill'
+$btnRemove.Margin = New-Object System.Windows.Forms.Padding(4, 6, 0, 0)
+Set-PrimaryButtonStyle -Button $btnRemove -BackColor $colorRed
+$assignmentLayout.Controls.Add($btnRemove, 1, 2)
 
 $tabLog = New-Object System.Windows.Forms.TabPage
 $tabLog.Text = 'Activity log'
@@ -985,4 +1057,6 @@ $form.Add_Shown({
 # START
 # ---------------------------------------------------------------------------
 
-[void]$form.ShowDialog()
+if (-not $NoGui) {
+    [void]$form.ShowDialog()
+}

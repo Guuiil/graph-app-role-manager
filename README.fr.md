@@ -10,8 +10,8 @@ Service Principal.
 
 Le dépôt contient deux versions :
 
-- une interface Windows native en PowerShell et Windows Forms ;
-- une interface Python/Tkinter pour Windows, macOS et les environnements de bureau Linux.
+- l'interface Python/Tkinter recommandée pour Windows, macOS et les bureaux Linux ;
+- une alternative Windows native en PowerShell et Windows Forms.
 
 Les permissions disponibles sont lues directement depuis le Service Principal Microsoft
 Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le code.
@@ -28,6 +28,7 @@ Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le
 - Conservation des permissions sélectionnées pendant le filtrage.
 - Dialogue dédié au Device Code sous Windows pour éviter les erreurs de Window Handle WAM.
 - Interface multiplateforme modernisée avec des contrôles et tableaux plus lisibles.
+- Interface Windows native adaptative reprenant la même organisation visuelle.
 - Journal d'activité et récapitulatif de chaque opération.
 - Aucun mot de passe, secret, certificat ou jeton d'accès enregistré sur le disque.
 
@@ -35,8 +36,8 @@ Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le
 
 | Version | Usage conseillé | Authentification | Prérequis |
 | --- | --- | --- | --- |
-| [Interface PowerShell Windows](windows/Graph-App-Role-Manager.ps1) | Poste d'administration Windows | `Connect-MgGraph` interactif | Windows, PowerShell 7+, modules Microsoft Graph |
-| [Interface Python multiplateforme v1.1](cross-platform/graph_app_role_manager.py) | Windows, macOS ou Linux | Device Code sous Windows ; navigateur interactif sous macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+| **[Interface Python multiplateforme v1.1](cross-platform/graph_app_role_manager.py) — recommandée** | Windows, macOS ou Linux | Device Code sous Windows ; navigateur interactif sous macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+| [Interface PowerShell Windows native](windows/Graph-App-Role-Manager.ps1) | Administrateurs Windows préférant une interface entièrement PowerShell | `Connect-MgGraph` interactif | Windows, PowerShell 7+, modules Microsoft Graph |
 
 La version multiplateforme ne nécessite ni App Registration dédiée, ni Client ID, ni
 secret, ni certificat, ni paquet Python supplémentaire.
@@ -54,16 +55,7 @@ Microsoft Entra adapté. Consultez
 
 ## Démarrage rapide
 
-### PowerShell sous Windows
-
-```powershell
-pwsh -File .\windows\Graph-App-Role-Manager.ps1
-```
-
-L'interface peut proposer l'installation des modules Graph absents pour l'utilisateur
-courant, mais demande une confirmation préalable.
-
-### Version multiplateforme
+### Version multiplateforme (recommandée)
 
 ```bash
 pwsh -NoProfile -Command "Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
@@ -74,6 +66,15 @@ Conservez `graph_app_role_manager.py`, `graph_backend.ps1` et
 `graph-app-role-manager-icon.png` dans le même dossier. Le champ du tenant est facultatif.
 Les prérequis par système et le dépannage se trouvent dans le
 [guide multiplateforme](docs/cross-platform.md).
+
+### Alternative Windows native
+
+```powershell
+pwsh -File .\windows\Graph-App-Role-Manager.ps1
+```
+
+L'interface native peut proposer l'installation des modules Graph absents pour
+l'utilisateur courant, mais demande une confirmation préalable.
 
 ## Utilisation prudente
 

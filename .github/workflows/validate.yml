@@ -41,6 +41,10 @@ jobs:
               exit 1
           }
 
+      - name: Smoke-test native Windows GUI
+        shell: pwsh
+        run: ./tests/windows_native_smoke.ps1
+
   python:
     name: Python syntax
     runs-on: ubuntu-latest
