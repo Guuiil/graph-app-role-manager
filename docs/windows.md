@@ -48,11 +48,16 @@ Authentication is process-scoped. The Graph session is disconnected when the for
 ## Usage
 
 1. Select **Connect to Microsoft Graph**.
-2. Enter part of the managed identity or service-principal display name.
-3. Select the correct result and verify its identifiers.
+2. Wait while the interface automatically loads the tenant's managed identities and
+   service principals.
+3. Select the correct identity from the list, or type a name, application ID, or object ID
+   to filter the list locally.
 4. Filter the Graph permission catalog.
 5. Check permissions and select **Assign selected permissions**.
 6. To remove assignments, select rows in the current-assignment table and choose
    **Remove selected**.
 
 Every change displays the target and permissions in a confirmation dialog.
+
+The permissions catalog and current-assignment table share the lower window equally, and
+remain balanced when the window is resized.
