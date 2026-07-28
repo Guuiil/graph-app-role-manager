@@ -109,8 +109,8 @@ user, but it asks for confirmation first.
 - [Cross-platform setup](docs/cross-platform.md)
 - [Permissions and safety](docs/permissions-and-safety.md)
 
-Screenshots are optional documentation assets and can be added later without changing the
-installation or project structure.
+Documentation screenshots use a hidden account label. Avoid publishing real administrator
+accounts, tenant domains, or other sensitive tenant information in future screenshots.
 
 ## Scope
 

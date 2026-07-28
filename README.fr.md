@@ -117,8 +117,9 @@ d'annuaire Entra, Azure RBAC ou les autorisations de site SharePoint `Sites.Sele
 - [Installation multiplateforme](docs/cross-platform.md)
 - [Permissions et sécurité](docs/permissions-and-safety.md)
 
-Les captures d'écran pourront être ajoutées ultérieurement sans modifier la structure ou le
-fonctionnement du projet.
+Les captures d'écran utilisent un libellé de compte masqué. Évitez de publier de véritables
+comptes administrateur, domaines de tenant ou autres informations sensibles du tenant dans
+les prochaines captures.
 
 ## Licence
 
