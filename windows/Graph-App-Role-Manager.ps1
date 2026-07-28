@@ -773,8 +773,6 @@ $summaryPanel.SetColumnSpan($lblIdentityNameValue, 3)
 $splitPermissions = New-Object System.Windows.Forms.SplitContainer
 $splitPermissions.Dock = 'Fill'
 $splitPermissions.SplitterDistance = 690
-$splitPermissions.Panel1MinSize = 480
-$splitPermissions.Panel2MinSize = 360
 $mainLayout.Controls.Add($splitPermissions, 0, 1)
 
 $grpPermissions = New-Object System.Windows.Forms.GroupBox
