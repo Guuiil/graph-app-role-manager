@@ -35,7 +35,7 @@ application-permission catalog stays aligned with the tenant instead of being ha
 
 | Version | Best for | Authentication | Requirements |
 | --- | --- | --- | --- |
-| **[Cross-platform Python GUI v1.1](cross-platform/graph_app_role_manager.py) — recommended** | Windows, macOS, or Linux desktops | Device code on Windows; interactive browser on macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+| **[Cross-platform Python GUI v1.1](cross-platform/graph_app_role_manager.py) (recommended)** | Windows, macOS, or Linux desktops | Device code on Windows; interactive browser on macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
 | [Native Windows PowerShell GUI](windows/Graph-App-Role-Manager.ps1) | Windows administrators who prefer a PowerShell-only interface | Interactive `Connect-MgGraph` | Windows, PowerShell 7+, Microsoft Graph modules |
 
 The cross-platform version does not require a custom App Registration, client ID, client
