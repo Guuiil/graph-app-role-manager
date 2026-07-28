@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Graph App Role Manager v1.
+"""Graph App Role Manager v1.1.
 
 Cross-platform Tkinter GUI using a persistent PowerShell 7 backend.
 Authentication is handled by Connect-MgGraph, so no custom App Registration,
@@ -15,13 +15,14 @@ import sys
 import threading
 import tkinter as tk
 import uuid
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any, Callable
 
 PROTOCOL_PREFIX = "__GARM__"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,11 @@ class AppRole:
 
 
 class PowerShellBridge:
-    def __init__(self, backend_path: Path, event_callback: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        backend_path: Path,
+        event_callback: Callable[[str, Any], None],
+    ) -> None:
         self.backend_path = backend_path
         self.event_callback = event_callback
         self.process: subprocess.Popen[str] | None = None
@@ -93,16 +98,20 @@ class PowerShellBridge:
             line = raw_line.rstrip("\r\n")
             if not line.startswith(PROTOCOL_PREFIX):
                 if line:
-                    self.event_callback(f"PowerShell: {line}")
+                    self.event_callback("log", f"PowerShell: {line}")
                 continue
             try:
                 payload = json.loads(line[len(PROTOCOL_PREFIX) :])
             except json.JSONDecodeError:
-                self.event_callback(f"Invalid backend response: {line}")
+                self.event_callback("log", f"Invalid backend response: {line}")
                 continue
 
-            if payload.get("event") == "ready":
-                self.ready.set()
+            event = payload.get("event")
+            if event:
+                if event == "ready":
+                    self.ready.set()
+                else:
+                    self.event_callback(event, payload.get("data"))
                 continue
 
             request_id = payload.get("requestId")
@@ -119,7 +128,7 @@ class PowerShellBridge:
             line = raw_line.rstrip("\r\n")
             if line:
                 self.startup_errors.append(line)
-                self.event_callback(f"PowerShell error stream: {line}")
+                self.event_callback("log", f"PowerShell error stream: {line}")
 
     def call(self, command: str, timeout: int = 180, **kwargs: Any) -> Any:
         if not self.process or self.process.poll() is not None or not self.process.stdin:
@@ -178,10 +187,11 @@ class GraphAppRoleManager(tk.Tk):
             except tk.TclError:
                 pass
         self.minsize(1000, 700)
+        self.configure(background="#f4f6f8")
 
         backend = Path(__file__).with_name("graph_backend.ps1")
-        self.bridge = PowerShellBridge(backend, self._queue_log)
         self.ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self.bridge = PowerShellBridge(backend, self._queue_backend_event)
         self.roles: list[AppRole] = []
         self.filtered_roles: list[AppRole] = []
         self.selected_role_ids: set[str] = set()
@@ -191,6 +201,7 @@ class GraphAppRoleManager(tk.Tk):
         self.selected_sp: dict[str, Any] | None = None
         self.current_assignments: dict[str, dict[str, Any]] = {}
         self.connected = False
+        self.device_code_dialog: tk.Toplevel | None = None
 
         self._configure_style()
         self._build_ui()
@@ -215,8 +226,71 @@ class GraphAppRoleManager(tk.Tk):
             foreground="#d1d5db",
             font=("Segoe UI", 10),
         )
-        style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"))
-        style.configure("Success.TButton", font=("Segoe UI", 10, "bold"))
+        base_font = (
+            "SF Pro Text"
+            if self.tk.call("tk", "windowingsystem") == "aqua"
+            else "Segoe UI",
+            10,
+        )
+        style.configure("TFrame", background="#f4f6f8")
+        style.configure(
+            "TLabel",
+            background="#f4f6f8",
+            foreground="#172033",
+            font=base_font,
+        )
+        style.configure(
+            "TLabelframe",
+            background="#f4f6f8",
+            bordercolor="#cbd5e1",
+            relief="solid",
+        )
+        style.configure(
+            "TLabelframe.Label",
+            background="#f4f6f8",
+            foreground="#172033",
+            font=(base_font[0], 10, "bold"),
+        )
+        style.configure("TNotebook", background="#f4f6f8", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(14, 7), font=base_font)
+        style.configure("TEntry", padding=6)
+        style.configure("TCombobox", padding=5)
+        style.configure("TButton", padding=(12, 7), font=base_font)
+        style.configure(
+            "Primary.TButton",
+            font=(base_font[0], 10, "bold"),
+            padding=(14, 8),
+        )
+        style.configure(
+            "Success.TButton",
+            font=(base_font[0], 10, "bold"),
+            padding=(14, 8),
+        )
+        style.configure(
+            "Danger.TButton",
+            font=(base_font[0], 10, "bold"),
+            padding=(12, 7),
+        )
+        style.configure(
+            "Treeview",
+            background="#ffffff",
+            fieldbackground="#ffffff",
+            foreground="#172033",
+            rowheight=28,
+            borderwidth=0,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#e9eef5",
+            foreground="#172033",
+            font=(base_font[0], 10, "bold"),
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", "#2563eb")],
+            foreground=[("selected", "#ffffff")],
+        )
 
     def _build_ui(self) -> None:
         header = ttk.Frame(self, style="Header.TFrame", padding=(20, 14))
@@ -290,7 +364,25 @@ class GraphAppRoleManager(tk.Tk):
         list_frame = ttk.Frame(permissions)
         list_frame.pack(fill="both", expand=True, pady=10)
         self.permission_list = tk.Listbox(
-            list_frame, selectmode=tk.MULTIPLE, activestyle="none", exportselection=False
+            list_frame,
+            selectmode=tk.MULTIPLE,
+            activestyle="none",
+            exportselection=False,
+            background="#ffffff",
+            foreground="#172033",
+            selectbackground="#2563eb",
+            selectforeground="#ffffff",
+            highlightbackground="#cbd5e1",
+            highlightcolor="#2563eb",
+            highlightthickness=1,
+            borderwidth=0,
+            relief="flat",
+            font=(
+                "SF Pro Text"
+                if self.tk.call("tk", "windowingsystem") == "aqua"
+                else "Segoe UI",
+                10,
+            ),
         )
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.permission_list.yview)
         self.permission_list.configure(yscrollcommand=scrollbar.set)
@@ -316,9 +408,12 @@ class GraphAppRoleManager(tk.Tk):
         ttk.Button(refresh_row, text="Refresh", command=self.refresh_assignments).pack(side="left")
         self.assigned_count_var = tk.StringVar(value="0 permission(s) assigned")
         ttk.Label(refresh_row, textvariable=self.assigned_count_var).pack(side="left", padx=10)
-        ttk.Button(refresh_row, text="Remove selected", command=self.remove_permissions).pack(
-            side="right"
-        )
+        ttk.Button(
+            refresh_row,
+            text="Remove selected",
+            style="Danger.TButton",
+            command=self.remove_permissions,
+        ).pack(side="right")
         self.assignment_tree = ttk.Treeview(
             current, columns=("permission", "display"), show="headings"
         )
@@ -339,8 +434,8 @@ class GraphAppRoleManager(tk.Tk):
         self.log_text.pack(fill="both", expand=True)
         self.log(f"Graph App Role Manager v{APP_VERSION} started.")
 
-    def _queue_log(self, message: str) -> None:
-        self.ui_queue.put(("log", message))
+    def _queue_backend_event(self, event: str, payload: Any) -> None:
+        self.ui_queue.put((event, payload))
 
     def start_backend(self) -> None:
         self.set_busy(True)
@@ -372,6 +467,10 @@ class GraphAppRoleManager(tk.Tk):
                 event, payload = self.ui_queue.get_nowait()
                 if event == "log":
                     self.log(payload)
+                elif event == "deviceCode":
+                    self.show_device_code(payload)
+                elif event == "authMessage":
+                    self.log(payload.get("message", "Microsoft Graph authentication update."))
                 elif event == "backend_ready":
                     self.on_backend_ready(payload)
                 elif event == "connected":
@@ -390,6 +489,7 @@ class GraphAppRoleManager(tk.Tk):
                     self.on_removal_complete(payload)
                 elif event == "error":
                     self.set_busy(False)
+                    self.dismiss_device_code_dialog()
                     self.log(payload, "ERROR")
                     messagebox.showerror("Graph App Role Manager", payload)
         except queue.Empty:
@@ -423,11 +523,112 @@ class GraphAppRoleManager(tk.Tk):
 
     def connect(self) -> None:
         tenant = self.tenant_var.get().strip()
-        self.log("Opening Microsoft Graph interactive authentication...")
-        self.run_async("connected", lambda: self.bridge.call("connect", tenantId=tenant, timeout=300))
+        self.log("Starting Microsoft Graph authentication...")
+        self.run_async(
+            "connected",
+            lambda: self.bridge.call("connect", tenantId=tenant, timeout=300),
+        )
+
+    def show_device_code(self, payload: dict[str, Any]) -> None:
+        self.dismiss_device_code_dialog()
+
+        verification_uri = (
+            payload.get("verificationUri") or "https://microsoft.com/devicelogin"
+        )
+        user_code = payload.get("userCode") or ""
+        message = payload.get("message") or (
+            f"Open {verification_uri} and enter code {user_code}."
+        )
+        self.log(message)
+
+        dialog = tk.Toplevel(self)
+        self.device_code_dialog = dialog
+        dialog.title("Sign in to Microsoft Graph")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        dialog.configure(background="#eef2f7")
+
+        card = tk.Frame(
+            dialog,
+            background="white",
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+        )
+        card.pack(fill="both", expand=True, padx=20, pady=20)
+
+        header = tk.Frame(card, background="#1f2937")
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Complete Microsoft Graph sign-in",
+            background="#1f2937",
+            foreground="white",
+            font=("Segoe UI", 15, "bold"),
+            padx=18,
+            pady=14,
+        ).pack(anchor="w")
+
+        content = tk.Frame(card, background="white", padx=18, pady=18)
+        content.pack(fill="both", expand=True)
+        tk.Label(
+            content,
+            text="A browser has been opened. Enter this one-time code:",
+            background="white",
+            foreground="#172033",
+            font=("Segoe UI", 11),
+        ).pack(anchor="w")
+
+        code_entry = ttk.Entry(
+            content,
+            justify="center",
+            font=("Consolas", 20, "bold"),
+            width=18,
+        )
+        code_entry.insert(0, user_code)
+        code_entry.configure(state="readonly")
+        code_entry.pack(fill="x", pady=(14, 8))
+
+        ttk.Label(
+            content,
+            text=verification_uri,
+            foreground="#2563eb",
+        ).pack(anchor="center", pady=(0, 12))
+
+        button_row = ttk.Frame(content)
+        button_row.pack(fill="x")
+
+        def copy_code() -> None:
+            self.clipboard_clear()
+            self.clipboard_append(user_code)
+            self.update()
+            self.log("Device sign-in code copied to the clipboard.")
+
+        ttk.Button(button_row, text="Copy code", command=copy_code).pack(side="left")
+        ttk.Button(
+            button_row,
+            text="Open browser",
+            style="Primary.TButton",
+            command=lambda: webbrowser.open(verification_uri),
+        ).pack(side="right")
+
+        dialog.protocol("WM_DELETE_WINDOW", self.dismiss_device_code_dialog)
+        dialog.update_idletasks()
+        width, height = 520, 290
+        x = self.winfo_rootx() + max(0, (self.winfo_width() - width) // 2)
+        y = self.winfo_rooty() + max(0, (self.winfo_height() - height) // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.lift()
+        webbrowser.open(verification_uri)
+
+    def dismiss_device_code_dialog(self) -> None:
+        dialog = self.device_code_dialog
+        self.device_code_dialog = None
+        if dialog and dialog.winfo_exists():
+            dialog.destroy()
 
     def on_connected(self, result: dict[str, Any]) -> None:
         self.set_busy(False)
+        self.dismiss_device_code_dialog()
         self.connected = True
         account = result.get("account") or "Connected"
         self.connect_button.configure(text=f"Connected: {account}")
@@ -566,6 +767,8 @@ class GraphAppRoleManager(tk.Tk):
 
     def clear_permission_selection(self) -> None:
         self.selected_role_ids.clear()
+        self.permission_filter_var.set("")
+        self.apply_permission_filter()
         self.permission_list.selection_clear(0, "end")
         self.selected_permission_count_var.set("0 permission(s) selected")
 
@@ -604,10 +807,10 @@ class GraphAppRoleManager(tk.Tk):
         dialog.transient(self)
         dialog.grab_set()
         dialog.resizable(False, False)
-        dialog.configure(background="#f3f4f6")
+        dialog.configure(background="#eef2f7")
 
         result = {"confirmed": False}
-        card = tk.Frame(dialog, background="white", highlightthickness=1, highlightbackground="#d1d5db")
+        card = tk.Frame(dialog, background="white", highlightthickness=1, highlightbackground="#cbd5e1")
         card.pack(fill="both", expand=True, padx=20, pady=20)
 
         header = tk.Frame(card, background="#1f2937")
@@ -652,12 +855,13 @@ class GraphAppRoleManager(tk.Tk):
             result["confirmed"] = True
             dialog.destroy()
 
-        tk.Button(buttons, text="Cancel", command=cancel, background="#e5e7eb", foreground="#111827",
-                  activebackground="#d1d5db", relief="flat", padx=22, pady=8,
-                  font=("Segoe UI", 10, "bold")).pack(side="right")
-        tk.Button(buttons, text="Assign permissions", command=confirm, background="#2563eb", foreground="white",
-                  activebackground="#1d4ed8", activeforeground="white", relief="flat", padx=22, pady=8,
-                  font=("Segoe UI", 10, "bold")).pack(side="right", padx=(0, 10))
+        ttk.Button(buttons, text="Cancel", command=cancel).pack(side="right")
+        ttk.Button(
+            buttons,
+            text="Assign permissions",
+            command=confirm,
+            style="Success.TButton",
+        ).pack(side="right", padx=(0, 10))
 
         dialog.update_idletasks()
         width = 680

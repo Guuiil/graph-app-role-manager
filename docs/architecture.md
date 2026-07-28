@@ -35,12 +35,15 @@ The Python version uses:
 
 - Tkinter for the desktop interface;
 - a persistent PowerShell 7 child process and a line-oriented JSON protocol;
-- `Connect-MgGraph` for interactive authentication;
+- `Connect-MgGraph` with device-code authentication on Windows, where the headless backend
+  cannot provide Web Account Manager with a parent window handle;
+- `Connect-MgGraph` interactive-browser authentication on macOS and Linux;
 - `Invoke-MgGraphRequest` for Microsoft Graph `v1.0` operations.
 
 The PowerShell authentication context is process-scoped and disconnected when the
 interface closes. The application does not create its own token cache or handle raw access
-tokens in Python.
+tokens in Python. On Windows, the backend sends the temporary verification URL and code to
+the GUI over the existing JSON protocol.
 
 ## Safety boundaries
 

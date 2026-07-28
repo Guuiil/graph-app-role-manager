@@ -2,7 +2,7 @@
 
 [Version française](README.fr.md)
 
-**Current cross-platform release: v1.0**
+**Current cross-platform version: v1.1**
 
 A graphical tool for inspecting, assigning, and removing Microsoft Graph application
 permissions on managed identities and service principals.
@@ -25,6 +25,8 @@ application-permission catalog stays aligned with the tenant instead of being ha
 - Remove selected assignments after an explicit confirmation.
 - Filter a tenant-wide identity list locally or run a server-side display-name search.
 - Keep permission selections while changing the permission filter.
+- Use a dedicated device-code sign-in dialog on Windows to avoid WAM window-handle errors.
+- Use the refreshed cross-platform interface with clearer controls and tables.
 - Keep an activity log and show a completion summary.
 - Store no password, client secret, certificate, or access token on disk.
 
@@ -33,7 +35,7 @@ application-permission catalog stays aligned with the tenant instead of being ha
 | Version | Best for | Authentication | Requirements |
 | --- | --- | --- | --- |
 | [Windows PowerShell GUI](windows/Graph-App-Role-Manager.ps1) | Windows administrators using Microsoft Graph PowerShell | Interactive `Connect-MgGraph` | Windows, PowerShell 7+, Microsoft Graph modules |
-| [Cross-platform Python GUI v1.0](cross-platform/graph_app_role_manager.py) | Windows, macOS, or Linux desktops | Interactive `Connect-MgGraph` through the bundled backend | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+| [Cross-platform Python GUI v1.1](cross-platform/graph_app_role_manager.py) | Windows, macOS, or Linux desktops | Device code on Windows; interactive browser on macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
 
 The cross-platform version does not require a custom App Registration, client ID, client
 secret, certificate, or additional Python packages.

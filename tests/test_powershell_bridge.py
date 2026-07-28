@@ -27,10 +27,10 @@ SPEC.loader.exec_module(MODULE)
 
 class PowerShellBridgeTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.events: list[str] = []
+        self.events: list[tuple[str, object]] = []
         self.bridge = MODULE.PowerShellBridge(
             Path("/tmp/graph_backend.ps1"),
-            self.events.append,
+            lambda event, payload: self.events.append((event, payload)),
         )
 
     def test_call_sends_protocol_request_and_returns_data(self) -> None:
@@ -88,9 +88,43 @@ class PowerShellBridgeTests(unittest.TestCase):
             )
         which.assert_called_once_with("pwsh")
 
+    def test_backend_event_is_forwarded_without_completing_request(self) -> None:
+        device_code = {
+            "verificationUri": "https://login.microsoft.com/device",
+            "userCode": "ABCD1234",
+        }
+        self.bridge.process = Mock(
+            stdout=io.StringIO(
+                f'{MODULE.PROTOCOL_PREFIX}'
+                f'{{"ok":true,"event":"deviceCode","data":{json.dumps(device_code)}}}\n'
+            )
+        )
+
+        self.bridge._read_stdout()
+
+        self.assertEqual(self.events, [("deviceCode", device_code)])
+        self.assertEqual(self.bridge.pending, {})
+
+    def test_ready_event_marks_bridge_ready(self) -> None:
+        self.bridge.process = Mock(
+            stdout=io.StringIO(
+                f'{MODULE.PROTOCOL_PREFIX}{{"ok":true,"event":"ready"}}\n'
+            )
+        )
+
+        self.bridge._read_stdout()
+
+        self.assertTrue(self.bridge.ready.is_set())
+
     def test_backend_path_is_resolved_next_to_gui(self) -> None:
         backend = SOURCE.with_name("graph_backend.ps1")
         self.assertTrue(backend.is_file())
+
+    def test_windows_backend_uses_device_code_authentication(self) -> None:
+        backend = SOURCE.with_name("graph_backend.ps1").read_text(encoding="utf-8")
+        self.assertIn("if ($IsWindows)", backend)
+        self.assertIn("$params.UseDeviceCode = $true", backend)
+        self.assertIn("event = 'deviceCode'", backend)
 
 
 if __name__ == "__main__":
