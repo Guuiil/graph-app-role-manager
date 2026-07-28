@@ -50,6 +50,8 @@ Add-Type -AssemblyName System.Drawing
 $script:GraphConnected         = $false
 $script:GraphServicePrincipal  = $null
 $script:TargetServicePrincipal = $null
+$script:AllTargetServicePrincipals = @()
+$script:SuppressIdentitySelectionEvent = $false
 $script:AllApplicationRoles    = @()
 $script:VisibleApplicationRoles = @()
 
@@ -158,11 +160,6 @@ Install them for the current user now?
 
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
     Import-Module Microsoft.Graph.Applications -ErrorAction Stop
-}
-
-function Escape-ODataString {
-    param([Parameter(Mandatory)][string]$Value)
-    return $Value.Replace("'", "''")
 }
 
 function Get-SelectedTargetServicePrincipal {
@@ -330,61 +327,131 @@ function Refresh-CurrentAssignments {
     Write-UiLog -Message "Current assignments loaded: $($assignments.Count)." -Level 'SUCCESS'
 }
 
-function Search-TargetServicePrincipals {
-    $name = $txtIdentityName.Text.Trim()
+function Set-TargetServicePrincipalResults {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Results
+    )
 
-    if ([string]::IsNullOrWhiteSpace($name)) {
-        throw 'Enter a Managed Identity or service principal display name.'
+    $selectedId = if ($null -ne $script:TargetServicePrincipal) {
+        [string]$script:TargetServicePrincipal.Id
+    }
+    else {
+        ''
     }
 
+    $script:SuppressIdentitySelectionEvent = $true
+    $cmbIdentityResults.BeginUpdate()
+    try {
+        $cmbIdentityResults.Items.Clear()
+
+        foreach ($sp in $Results) {
+            $label = "{0} | {1} | {2}" -f (
+                $sp.DisplayName,
+                $sp.ServicePrincipalType,
+                $sp.Id
+            )
+
+            # ComboBox cannot directly host controls; use a PSObject with ToString().
+            $item = [pscustomobject]@{
+                Text = $label
+                Tag  = $sp
+            }
+            $item | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.Text } -Force
+            [void]$cmbIdentityResults.Items.Add($item)
+        }
+    }
+    finally {
+        $cmbIdentityResults.EndUpdate()
+    }
+
+    $lblSearchResults.Text = "{0} matching identities" -f $Results.Count
+
+    if ($Results.Count -eq 0) {
+        $script:SuppressIdentitySelectionEvent = $false
+        $script:TargetServicePrincipal = $null
+        Update-IdentitySummary -ServicePrincipal $null
+        $gridAssignments.Rows.Clear()
+        $lblAssignedCount.Text = '0 permission(s) assigned'
+        return
+    }
+
+    $selectedIndex = 0
+    if (-not [string]::IsNullOrWhiteSpace($selectedId)) {
+        for ($index = 0; $index -lt $Results.Count; $index++) {
+            if ([string]$Results[$index].Id -eq $selectedId) {
+                $selectedIndex = $index
+                break
+            }
+        }
+    }
+
+    $cmbIdentityResults.SelectedIndex = $selectedIndex
+    $script:SuppressIdentitySelectionEvent = $false
+
+    $selected = $Results[$selectedIndex]
+    $selectionChanged = [string]$selected.Id -ne $selectedId
+    $script:TargetServicePrincipal = $selected
+    Update-IdentitySummary -ServicePrincipal $selected
+
+    if ($selectionChanged -and $script:GraphConnected) {
+        Write-UiLog -Message "Selected target: $($selected.DisplayName)"
+        Refresh-CurrentAssignments
+    }
+}
+
+function Load-TargetServicePrincipals {
     if (-not $script:GraphConnected) {
         throw 'Connect to Microsoft Graph first.'
     }
 
-    $escaped = Escape-ODataString -Value $name
-
-    Write-UiLog -Message "Searching service principals matching: $name"
-
-    # StartsWith supports partial searches and is convenient for Managed Identity names.
-    $results = @(
+    Write-UiLog -Message 'Loading Managed Identities and service principals...'
+    $script:AllTargetServicePrincipals = @(
         Get-MgServicePrincipal `
-            -Filter "startsWith(displayName,'$escaped')" `
             -Property 'id,appId,displayName,servicePrincipalType,accountEnabled' `
-            -ConsistencyLevel eventual `
             -All `
             -ErrorAction Stop |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.DisplayName)
+        } |
         Sort-Object DisplayName
     )
 
-    $cmbIdentityResults.Items.Clear()
-    $script:TargetServicePrincipal = $null
-    Update-IdentitySummary -ServicePrincipal $null
-    $gridAssignments.Rows.Clear()
+    Filter-TargetServicePrincipals
 
-    foreach ($sp in $results) {
-        $label = "{0} | {1} | {2}" -f (
-            $sp.DisplayName,
-            $sp.ServicePrincipalType,
-            $sp.Id
+    Write-UiLog -Message (
+        "Loaded {0} Managed Identities and service principals." -f
+        $script:AllTargetServicePrincipals.Count
+    ) -Level 'SUCCESS'
+}
+
+function Filter-TargetServicePrincipals {
+    $term = $txtIdentityName.Text.Trim()
+    $results = if ([string]::IsNullOrWhiteSpace($term)) {
+        @($script:AllTargetServicePrincipals)
+    }
+    else {
+        @(
+            $script:AllTargetServicePrincipals |
+            Where-Object {
+                ([string]$_.DisplayName).IndexOf(
+                    $term,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -ge 0 -or
+                ([string]$_.AppId).IndexOf(
+                    $term,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -ge 0 -or
+                ([string]$_.Id).IndexOf(
+                    $term,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ) -ge 0
+            }
         )
-
-        # ComboBox cannot directly host controls; use a PSObject with ToString().
-        $item = [pscustomobject]@{
-            Text = $label
-            Tag  = $sp
-        }
-        $item | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.Text } -Force
-
-        [void]$cmbIdentityResults.Items.Add($item)
     }
 
-    if ($results.Count -eq 0) {
-        Write-UiLog -Message 'No matching service principal was found.' -Level 'WARNING'
-        return
-    }
-
-    $cmbIdentityResults.SelectedIndex = 0
-    Write-UiLog -Message "Found $($results.Count) matching service principal(s)." -Level 'SUCCESS'
+    Set-TargetServicePrincipalResults -Results $results
 }
 
 function Assign-SelectedPermissions {
@@ -576,6 +643,41 @@ $colorGreen = [System.Drawing.Color]::FromArgb(22, 163, 74)
 $colorRed = [System.Drawing.Color]::FromArgb(190, 45, 45)
 $colorMuted = [System.Drawing.Color]::FromArgb(96, 108, 126)
 
+function Set-RoundedButtonRegion {
+    param([Parameter(Mandatory)]$Button)
+
+    if ($Button.Width -le 0 -or $Button.Height -le 0) {
+        return
+    }
+
+    $radius = 7
+    $diameter = $radius * 2
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    try {
+        $path.AddArc(0, 0, $diameter, $diameter, 180, 90)
+        $path.AddArc($Button.Width - $diameter - 1, 0, $diameter, $diameter, 270, 90)
+        $path.AddArc(
+            $Button.Width - $diameter - 1,
+            $Button.Height - $diameter - 1,
+            $diameter,
+            $diameter,
+            0,
+            90
+        )
+        $path.AddArc(0, $Button.Height - $diameter - 1, $diameter, $diameter, 90, 90)
+        $path.CloseFigure()
+
+        $previousRegion = $Button.Region
+        $Button.Region = New-Object System.Drawing.Region($path)
+        if ($null -ne $previousRegion) {
+            $previousRegion.Dispose()
+        }
+    }
+    finally {
+        $path.Dispose()
+    }
+}
+
 function Set-PrimaryButtonStyle {
     param(
         [Parameter(Mandatory)]$Button,
@@ -586,8 +688,14 @@ function Set-PrimaryButtonStyle {
     $Button.ForeColor = [System.Drawing.Color]::White
     $Button.FlatStyle = 'Flat'
     $Button.FlatAppearance.BorderSize = 0
+    $Button.FlatAppearance.MouseOverBackColor = [System.Windows.Forms.ControlPaint]::Light($BackColor)
+    $Button.FlatAppearance.MouseDownBackColor = [System.Windows.Forms.ControlPaint]::Dark($BackColor)
     $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
     $Button.Margin = New-Object System.Windows.Forms.Padding(6)
+    $Button.Add_Resize({
+        Set-RoundedButtonRegion -Button $this
+    })
+    Set-RoundedButtonRegion -Button $Button
 }
 
 function New-FieldLabel {
@@ -655,8 +763,9 @@ $titlePanel.Controls.Add($lblSubtitle, 0, 1)
 
 $btnConnect = New-Object System.Windows.Forms.Button
 $btnConnect.Text = 'Connect to Microsoft Graph'
-$btnConnect.Dock = 'Fill'
-$btnConnect.Margin = New-Object System.Windows.Forms.Padding(6, 16, 0, 16)
+$btnConnect.Size = New-Object System.Drawing.Size(230, 40)
+$btnConnect.Anchor = 'Right'
+$btnConnect.Margin = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
 Set-PrimaryButtonStyle -Button $btnConnect
 $headerPanel.Controls.Add($btnConnect, 1, 0)
 
@@ -693,31 +802,33 @@ $mainLayout.Controls.Add($grpIdentity, 0, 0)
 
 $identityLayout = New-Object System.Windows.Forms.TableLayoutPanel
 $identityLayout.Dock = 'Fill'
-$identityLayout.ColumnCount = 3
+$identityLayout.ColumnCount = 2
 $identityLayout.RowCount = 4
 $identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
-$identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 130)))
-$identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 0)))
+$identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 110)))
 $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 27)))
 $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 38)))
 $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 57)))
 $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
 $grpIdentity.Controls.Add($identityLayout)
 
-$lblIdentitySearch = New-FieldLabel -Text 'Managed identity or service-principal display name'
+$lblIdentitySearch = New-FieldLabel -Text 'Filter the loaded identities by name, application ID, or object ID'
 $identityLayout.Controls.Add($lblIdentitySearch, 0, 0)
 
 $txtIdentityName = New-Object System.Windows.Forms.TextBox
-$txtIdentityName.PlaceholderText = 'Enter a full or partial display name'
+$txtIdentityName.PlaceholderText = 'All identities are shown after connection — type here to filter'
 $txtIdentityName.Dock = 'Fill'
 $txtIdentityName.Margin = New-Object System.Windows.Forms.Padding(0, 3, 8, 6)
 $identityLayout.Controls.Add($txtIdentityName, 0, 1)
 
 $btnSearchIdentity = New-Object System.Windows.Forms.Button
-$btnSearchIdentity.Text = 'Search'
+$btnSearchIdentity.Text = 'Clear'
 $btnSearchIdentity.Dock = 'Fill'
 $btnSearchIdentity.Margin = New-Object System.Windows.Forms.Padding(4, 2, 0, 5)
-Set-PrimaryButtonStyle -Button $btnSearchIdentity
+Set-PrimaryButtonStyle `
+    -Button $btnSearchIdentity `
+    -BackColor ([System.Drawing.Color]::FromArgb(226, 232, 240))
+$btnSearchIdentity.ForeColor = [System.Drawing.Color]::FromArgb(45, 55, 72)
 $identityLayout.Controls.Add($btnSearchIdentity, 1, 1)
 
 $resultsLayout = New-Object System.Windows.Forms.TableLayoutPanel
@@ -772,7 +883,8 @@ $summaryPanel.SetColumnSpan($lblIdentityNameValue, 3)
 
 $splitPermissions = New-Object System.Windows.Forms.SplitContainer
 $splitPermissions.Dock = 'Fill'
-$splitPermissions.SplitterDistance = 690
+$splitPermissions.SplitterWidth = 8
+$splitPermissions.BackColor = $colorCanvas
 $mainLayout.Controls.Add($splitPermissions, 0, 1)
 
 $grpPermissions = New-Object System.Windows.Forms.GroupBox
@@ -932,6 +1044,8 @@ $btnConnect.Add_Click({
 
         $btnConnect.Text = "Connected: $($context.Account)"
         $btnConnect.BackColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
+        $btnConnect.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(34, 180, 88)
+        $btnConnect.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(18, 130, 59)
 
         Write-UiLog -Message (
             "Connected to tenant {0} as {1}." -f
@@ -940,6 +1054,7 @@ $btnConnect.Add_Click({
         ) -Level 'SUCCESS'
 
         Load-GraphApplicationRoles
+        Load-TargetServicePrincipals
     }
     catch {
         Show-UiError -Message $_.Exception.Message
@@ -950,19 +1065,24 @@ $btnConnect.Add_Click({
 })
 
 $btnSearchIdentity.Add_Click({
+    $txtIdentityName.Clear()
+    $txtIdentityName.Focus()
+})
+
+$txtIdentityName.Add_TextChanged({
     try {
-        Set-BusyState -Busy $true
-        Search-TargetServicePrincipals
+        Filter-TargetServicePrincipals
     }
     catch {
-        Show-UiError -Message $_.Exception.Message
-    }
-    finally {
-        Set-BusyState -Busy $false
+        Write-UiLog -Message $_.Exception.Message -Level 'ERROR'
     }
 })
 
 $cmbIdentityResults.Add_SelectedIndexChanged({
+    if ($script:SuppressIdentitySelectionEvent) {
+        return
+    }
+
     try {
         $selected = Get-SelectedTargetServicePrincipal
         $script:TargetServicePrincipal = $selected
@@ -1049,8 +1169,28 @@ $form.Add_FormClosing({
 })
 
 $form.Add_Shown({
+    if ($splitPermissions.ClientSize.Width -gt 0) {
+        $splitPermissions.SplitterDistance = [Math]::Floor(
+            ($splitPermissions.ClientSize.Width - $splitPermissions.SplitterWidth) / 2
+        )
+    }
+
     Write-UiLog -Message 'Graph App Role Manager started.'
-    Write-UiLog -Message 'Connect to Microsoft Graph, search the Managed Identity, then select application permissions.'
+    Write-UiLog -Message 'Connect to Microsoft Graph, choose a loaded identity, then select application permissions.'
+})
+
+$splitPermissions.Add_SizeChanged({
+    if ($splitPermissions.ClientSize.Width -le 0) {
+        return
+    }
+
+    $balancedDistance = [Math]::Floor(
+        ($splitPermissions.ClientSize.Width - $splitPermissions.SplitterWidth) / 2
+    )
+
+    if ($balancedDistance -gt 0) {
+        $splitPermissions.SplitterDistance = $balancedDistance
+    }
 })
 
 # ---------------------------------------------------------------------------
