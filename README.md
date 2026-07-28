@@ -41,6 +41,23 @@ application-permission catalog stays aligned with the tenant instead of being ha
 The cross-platform version does not require a custom App Registration, client ID, client
 secret, certificate, or additional Python packages.
 
+## Screenshots
+
+### Cross-platform GUI (recommended)
+
+![Graph App Role Manager cross-platform GUI on Windows](docs/images/cross-platform-windows.png)
+
+### Native Windows PowerShell GUI
+
+![Graph App Role Manager native Windows PowerShell GUI](docs/images/native-windows.png)
+
+> **Interface scope:** The GUIs intentionally prioritize reliable Microsoft Graph
+> operations, clarity, portability, and native-toolkit compatibility over a highly
+> customized visual design. Tkinter and Windows Forms inherit much of their appearance
+> from the operating system and offer less visual flexibility than a modern web interface.
+> Further cosmetic refinement is therefore not a primary project goal; safe and correct
+> permission management remains the priority.
+
 ## Required delegated permissions
 
 The signed-in session requests:
@@ -92,8 +109,8 @@ user, but it asks for confirmation first.
 - [Cross-platform setup](docs/cross-platform.md)
 - [Permissions and safety](docs/permissions-and-safety.md)
 
-Screenshots are optional documentation assets and can be added later without changing the
-installation or project structure.
+Documentation screenshots use a hidden account label. Avoid publishing real administrator
+accounts, tenant domains, or other sensitive tenant information in future screenshots.
 
 ## Scope
 

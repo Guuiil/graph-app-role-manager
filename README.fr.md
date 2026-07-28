@@ -42,6 +42,24 @@ Graph du tenant. Elles ne sont pas enregistrées dans une liste statique dans le
 La version multiplateforme ne nécessite ni App Registration dédiée, ni Client ID, ni
 secret, ni certificat, ni paquet Python supplémentaire.
 
+## Captures d'écran
+
+### Interface multiplateforme (recommandée)
+
+![Interface multiplateforme de Graph App Role Manager sous Windows](docs/images/cross-platform-windows.png)
+
+### Interface PowerShell Windows native
+
+![Interface PowerShell Windows native de Graph App Role Manager](docs/images/native-windows.png)
+
+> **Périmètre de l'interface :** Les interfaces privilégient volontairement la fiabilité
+> des opérations Microsoft Graph, la lisibilité, la portabilité et la compatibilité avec
+> les composants natifs plutôt qu'une personnalisation visuelle poussée. Tkinter et
+> Windows Forms héritent largement de l'apparence du système d'exploitation et offrent
+> moins de souplesse visuelle qu'une interface web moderne. Les améliorations purement
+> esthétiques ne constituent donc pas l'objectif principal du projet ; la gestion sûre et
+> correcte des permissions reste prioritaire.
+
 ## Permissions déléguées requises
 
 La session de l'administrateur demande :
@@ -99,8 +117,9 @@ d'annuaire Entra, Azure RBAC ou les autorisations de site SharePoint `Sites.Sele
 - [Installation multiplateforme](docs/cross-platform.md)
 - [Permissions et sécurité](docs/permissions-and-safety.md)
 
-Les captures d'écran pourront être ajoutées ultérieurement sans modifier la structure ou le
-fonctionnement du projet.
+Les captures d'écran utilisent un libellé de compte masqué. Évitez de publier de véritables
+comptes administrateur, domaines de tenant ou autres informations sensibles du tenant dans
+les prochaines captures.
 
 ## Licence
 
