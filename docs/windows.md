@@ -1,5 +1,10 @@
 # Windows setup
 
+The cross-platform GUI is the recommended interface, including on Windows. This native
+PowerShell/Windows Forms edition remains available for administrators who prefer a
+PowerShell-only Windows experience. It follows the same three-step workflow and visual
+structure as the cross-platform edition.
+
 ## Requirements
 
 - Windows 10/11 or Windows Server with a desktop session.
@@ -19,6 +24,10 @@ pwsh -File .\windows\Graph-App-Role-Manager.ps1
 If a required Microsoft Graph module is missing, the interface displays the exact module
 names and asks whether it may install them for the current user. Declining leaves the
 machine unchanged and stops the connection.
+
+The module check safely handles zero, one, or several missing modules. This is important
+with PowerShell strict mode, which otherwise treats a single result differently from a
+collection.
 
 Modules can also be installed beforehand:
 

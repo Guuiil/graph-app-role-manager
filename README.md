@@ -9,8 +9,8 @@ permissions on managed identities and service principals.
 
 The repository contains two interfaces:
 
-- a native Windows PowerShell/Windows Forms version;
-- a Python/Tkinter version for Windows, macOS, and Linux desktop environments.
+- the recommended Python/Tkinter GUI for Windows, macOS, and Linux desktops;
+- a native Windows PowerShell/Windows Forms alternative.
 
 Both versions query the Microsoft Graph service principal directly, so the available
 application-permission catalog stays aligned with the tenant instead of being hard-coded.
@@ -27,6 +27,7 @@ application-permission catalog stays aligned with the tenant instead of being ha
 - Keep permission selections while changing the permission filter.
 - Use a dedicated device-code sign-in dialog on Windows to avoid WAM window-handle errors.
 - Use the refreshed cross-platform interface with clearer controls and tables.
+- Use a responsive native Windows interface with matching visual structure.
 - Keep an activity log and show a completion summary.
 - Store no password, client secret, certificate, or access token on disk.
 
@@ -34,8 +35,8 @@ application-permission catalog stays aligned with the tenant instead of being ha
 
 | Version | Best for | Authentication | Requirements |
 | --- | --- | --- | --- |
-| [Windows PowerShell GUI](windows/Graph-App-Role-Manager.ps1) | Windows administrators using Microsoft Graph PowerShell | Interactive `Connect-MgGraph` | Windows, PowerShell 7+, Microsoft Graph modules |
-| [Cross-platform Python GUI v1.1](cross-platform/graph_app_role_manager.py) | Windows, macOS, or Linux desktops | Device code on Windows; interactive browser on macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+| **[Cross-platform Python GUI v1.1](cross-platform/graph_app_role_manager.py) — recommended** | Windows, macOS, or Linux desktops | Device code on Windows; interactive browser on macOS/Linux | Python 3.10+, Tkinter, PowerShell 7, `Microsoft.Graph.Authentication` |
+| [Native Windows PowerShell GUI](windows/Graph-App-Role-Manager.ps1) | Windows administrators who prefer a PowerShell-only interface | Interactive `Connect-MgGraph` | Windows, PowerShell 7+, Microsoft Graph modules |
 
 The cross-platform version does not require a custom App Registration, client ID, client
 secret, certificate, or additional Python packages.
@@ -53,16 +54,7 @@ Microsoft Entra role are required. Review
 
 ## Quick start
 
-### Windows PowerShell
-
-```powershell
-pwsh -File .\windows\Graph-App-Role-Manager.ps1
-```
-
-The interface can offer to install missing Microsoft Graph modules for the current user,
-but it asks for confirmation first.
-
-### Cross-platform
+### Cross-platform (recommended)
 
 ```bash
 pwsh -NoProfile -Command "Install-Module Microsoft.Graph.Authentication -Scope CurrentUser"
@@ -73,6 +65,15 @@ Keep `graph_app_role_manager.py`, `graph_backend.ps1`, and
 `graph-app-role-manager-icon.png` together. The tenant field is optional. See the
 [cross-platform setup guide](docs/cross-platform.md) for OS-specific prerequisites and
 troubleshooting.
+
+### Native Windows alternative
+
+```powershell
+pwsh -File .\windows\Graph-App-Role-Manager.ps1
+```
+
+The native interface can offer to install missing Microsoft Graph modules for the current
+user, but it asks for confirmation first.
 
 ## Safe operating sequence
 
