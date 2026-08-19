@@ -5,8 +5,10 @@ Cross-platform Tkinter GUI using a persistent PowerShell 7 backend.
 Authentication is handled by Connect-MgGraph, so no custom App Registration,
 client ID, secret, certificate, MSAL package, or requests package is required.
 """
+
 from __future__ import annotations
 
+import io
 import json
 import queue
 import shutil
@@ -66,7 +68,6 @@ class PowerShellBridge:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            encoding="utf-8",
             errors="replace",
             bufsize=1,
         )
@@ -120,7 +121,6 @@ class PowerShellBridge:
                 response_queue = self.pending.get(request_id)
             if response_queue:
                 response_queue.put(payload)
-
         # Reaching EOF means the backend exited. Do not mark it as ready.
 
     def _read_stderr(self) -> None:
