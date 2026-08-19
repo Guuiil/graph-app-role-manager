@@ -1,33 +1,94 @@
-﻿#Requires -Version 7.0
+#Requires -Version 7.0
 <#
 .SYNOPSIS
-Graph App Role Manager - GUI helper for assigning Microsoft Graph application
-permissions (app roles) to a Managed Identity or another service principal.
+Graph App Role Manager module for the native Windows GUI.
 
 .DESCRIPTION
-Windows Forms GUI that:
-- Connects to Microsoft Graph with delegated administrative scopes.
-- Searches a target service principal by display name.
-- Lists Microsoft Graph application permissions.
-- Shows permissions already assigned to the target.
-- Assigns one or more selected application permissions.
-- Removes one or more selected application permissions after confirmation.
-- Avoids duplicate assignments and writes an execution log.
-
-REQUIREMENTS
-- Windows
-- PowerShell 7+
-- Microsoft.Graph.Authentication
-- Microsoft.Graph.Applications
-
-The signed-in administrator must be allowed to create app role assignments.
-Typical delegated scopes requested by this tool:
-- Application.Read.All
-- AppRoleAssignment.ReadWrite.All
-
-SECURITY
-Grant only the permissions needed by the target workload.
+Provides Start-GraphAppRoleManager for launching the Windows Forms interface that
+manages Microsoft Graph application permissions for Managed Identities and service
+principals.
 #>
+
+Set-StrictMode -Version Latest
+
+$script:LogLevel = 'INFO'
+$script:LogLevelRank = @{
+    INFO    = 0
+    SUCCESS = 1
+    WARNING = 2
+    ERROR   = 3
+}
+
+function Initialize-GraphAppRoleManagerModuleState {
+    $script:GraphConnected = $false
+    $script:GraphServicePrincipal = $null
+    $script:TargetServicePrincipal = $null
+    $script:AllTargetServicePrincipals = @()
+    $script:SuppressIdentitySelectionEvent = $false
+    $script:AllApplicationRoles = @()
+    $script:VisibleApplicationRoles = @()
+
+    $script:form = $null
+    $script:rootLayout = $null
+    $script:headerPanel = $null
+    $script:titlePanel = $null
+    $script:lblTitle = $null
+    $script:lblSubtitle = $null
+    $script:btnConnect = $null
+    $script:tabs = $null
+    $script:tabAssign = $null
+    $script:mainLayout = $null
+    $script:grpIdentity = $null
+    $script:identityLayout = $null
+    $script:lblIdentitySearch = $null
+    $script:txtIdentityName = $null
+    $script:btnSearchIdentity = $null
+    $script:resultsLayout = $null
+    $script:lblSearchResults = $null
+    $script:cmbIdentityResults = $null
+    $script:summaryPanel = $null
+    $script:lblIdentityName = $null
+    $script:lblIdentityNameValue = $null
+    $script:lblObjectId = $null
+    $script:lblObjectIdValue = $null
+    $script:lblAppId = $null
+    $script:lblAppIdValue = $null
+    $script:splitPermissions = $null
+    $script:grpPermissions = $null
+    $script:permissionLayout = $null
+    $script:txtPermissionFilter = $null
+    $script:btnLoadPermissions = $null
+    $script:checkedPermissions = $null
+    $script:lblPermissionCount = $null
+    $script:btnAssign = $null
+    $script:grpCurrent = $null
+    $script:assignmentLayout = $null
+    $script:lblAssignedCount = $null
+    $script:btnRefreshAssignments = $null
+    $script:gridAssignments = $null
+    $script:btnRemove = $null
+    $script:tabLog = $null
+    $script:txtLog = $null
+    $script:colorCanvas = $null
+    $script:colorHeader = $null
+    $script:colorBlue = $null
+    $script:colorGreen = $null
+    $script:colorRed = $null
+    $script:colorMuted = $null
+}
+
+function Reset-GraphAppRoleManagerState {
+    if ($null -ne $script:form) {
+        try {
+            $script:form.Dispose()
+        }
+        catch {}
+    }
+
+    Initialize-GraphAppRoleManagerModuleState
+}
+
+Initialize-GraphAppRoleManagerModuleState
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -38,31 +99,26 @@ function Write-UiLog {
         [Parameter(Mandatory)]
         [string]$Message,
 
-        [ValidateSet('DEBUG','INFO', 'SUCCESS', 'WARNING', 'ERROR')]
+        [ValidateSet('INFO', 'SUCCESS', 'WARNING', 'ERROR')]
         [string]$Level = 'INFO'
     )
 
-    $Loglevelindex = @{
-        'DEBUG' = -1
-        'INFO' = 0
-        'SUCCESS' = 1
-        'WARNING' = 2
-        'ERROR' = 3
+    if ($script:LogLevelRank[$Level] -lt $script:LogLevelRank[$script:LogLevel]) {
+        return
     }
 
-    if ($Loglevelindex[$Level] -ge $Loglevelindex[$Globalloglevel]){
-        $timestamp = Get-Date -Format 'HH:mm:ss'
-        $line = "[$timestamp][$Level] $Message"
+    $timestamp = Get-Date -Format 'HH:mm:ss'
+    $line = "[$timestamp][$Level] $Message"
 
-        if ($null -ne $txtLog) {
-            $txtLog.AppendText($line + [Environment]::NewLine)
-            $txtLog.SelectionStart = $txtLog.TextLength
-            $txtLog.ScrollToCaret()
-        }
-
-        Write-Host $line
+    if ($null -ne $script:txtLog) {
+        $script:txtLog.AppendText($line + [Environment]::NewLine)
+        $script:txtLog.SelectionStart = $script:txtLog.TextLength
+        $script:txtLog.ScrollToCaret()
     }
+
+    Write-Host $line
 }
+
 
 function Show-UiError {
     param(
@@ -82,15 +138,15 @@ function Show-UiError {
 function Set-BusyState {
     param([bool]$Busy)
 
-    $form.UseWaitCursor = $Busy
+    $script:form.UseWaitCursor = $Busy
 
     foreach ($control in @(
-        $btnConnect,
-        $btnSearchIdentity,
-        $btnLoadPermissions,
-        $btnAssign,
-        $btnRemove,
-        $btnRefreshAssignments
+        $script:btnConnect,
+        $script:btnSearchIdentity,
+        $script:btnLoadPermissions,
+        $script:btnAssign,
+        $script:btnRemove,
+        $script:btnRefreshAssignments
     )) {
         if ($null -ne $control) {
             $control.Enabled = -not $Busy
@@ -147,26 +203,26 @@ Install them for the current user now?
 }
 
 function Get-SelectedTargetServicePrincipal {
-    if ($null -eq $cmbIdentityResults.SelectedItem) {
+    if ($null -eq $script:cmbIdentityResults -or $null -eq $script:cmbIdentityResults.SelectedItem) {
         return $null
     }
 
-    return $cmbIdentityResults.SelectedItem.Tag
+    return $script:cmbIdentityResults.SelectedItem.Tag
 }
 
 function Update-IdentitySummary {
     param($ServicePrincipal)
 
     if ($null -eq $ServicePrincipal) {
-        $lblIdentityNameValue.Text = '-'
-        $lblObjectIdValue.Text = '-'
-        $lblAppIdValue.Text = '-'
+        $script:lblIdentityNameValue.Text = '-'
+        $script:lblObjectIdValue.Text = '-'
+        $script:lblAppIdValue.Text = '-'
         return
     }
 
-    $lblIdentityNameValue.Text = [string]$ServicePrincipal.DisplayName
-    $lblObjectIdValue.Text = [string]$ServicePrincipal.Id
-    $lblAppIdValue.Text = [string]$ServicePrincipal.AppId
+    $script:lblIdentityNameValue.Text = [string]$ServicePrincipal.DisplayName
+    $script:lblObjectIdValue.Text = [string]$ServicePrincipal.Id
+    $script:lblAppIdValue.Text = [string]$ServicePrincipal.AppId
 }
 
 function Load-GraphApplicationRoles {
@@ -206,7 +262,7 @@ function Load-GraphApplicationRoles {
 }
 
 function Apply-PermissionFilter {
-    $filter = $txtPermissionFilter.Text.Trim()
+    $filter = $script:txtPermissionFilter.Text.Trim()
 
     if ([string]::IsNullOrWhiteSpace($filter)) {
         $script:VisibleApplicationRoles = @($script:AllApplicationRoles)
@@ -223,14 +279,14 @@ function Apply-PermissionFilter {
     }
 
     $checkedValues = @{}
-    foreach ($index in $checkedPermissions.CheckedIndices) {
-        $role = $checkedPermissions.Items[$index]
+    foreach ($index in $script:checkedPermissions.CheckedIndices) {
+        $role = $script:checkedPermissions.Items[$index]
         $checkedValues[[string]$role.Value] = $true
     }
 
-    $checkedPermissions.BeginUpdate()
+    $script:checkedPermissions.BeginUpdate()
     try {
-        $checkedPermissions.Items.Clear()
+        $script:checkedPermissions.Items.Clear()
 
         foreach ($role in $script:VisibleApplicationRoles) {
             $item = [pscustomobject]@{
@@ -241,17 +297,17 @@ function Apply-PermissionFilter {
                 Text        = "{0} — {1}" -f $role.Value, $role.DisplayName
             }
 
-            $newIndex = $checkedPermissions.Items.Add($item)
+            $newIndex = $script:checkedPermissions.Items.Add($item)
             if ($checkedValues.ContainsKey($item.Value)) {
-                $checkedPermissions.SetItemChecked($newIndex, $true)
+                $script:checkedPermissions.SetItemChecked($newIndex, $true)
             }
         }
     }
     finally {
-        $checkedPermissions.EndUpdate()
+        $script:checkedPermissions.EndUpdate()
     }
 
-    $lblPermissionCount.Text = "{0} permission(s) displayed" -f $script:VisibleApplicationRoles.Count
+    $script:lblPermissionCount.Text = "{0} permission(s) displayed" -f $script:VisibleApplicationRoles.Count
 }
 
 function Refresh-CurrentAssignments {
@@ -280,7 +336,7 @@ function Refresh-CurrentAssignments {
         $roleById[[string]$role.Id] = $role
     }
 
-    $gridAssignments.Rows.Clear()
+    $script:gridAssignments.Rows.Clear()
 
     foreach ($assignment in $assignments | Sort-Object AppRoleId) {
         $role = $roleById[[string]$assignment.AppRoleId]
@@ -299,7 +355,7 @@ function Refresh-CurrentAssignments {
             ''
         }
 
-        [void]$gridAssignments.Rows.Add(
+        [void]$script:gridAssignments.Rows.Add(
             $permissionValue,
             $displayName,
             [string]$assignment.AppRoleId,
@@ -307,7 +363,7 @@ function Refresh-CurrentAssignments {
         )
     }
 
-    $lblAssignedCount.Text = "{0} Microsoft Graph permission(s) assigned" -f $assignments.Count
+    $script:lblAssignedCount.Text = "{0} Microsoft Graph permission(s) assigned" -f $assignments.Count
     Write-UiLog -Message "Current assignments loaded: $($assignments.Count)." -Level 'SUCCESS'
 }
 
@@ -326,9 +382,9 @@ function Set-TargetServicePrincipalResults {
     }
 
     $script:SuppressIdentitySelectionEvent = $true
-    $cmbIdentityResults.BeginUpdate()
+    $script:cmbIdentityResults.BeginUpdate()
     try {
-        $cmbIdentityResults.Items.Clear()
+        $script:cmbIdentityResults.Items.Clear()
 
         foreach ($sp in $Results) {
             $label = "{0} | {1} | {2}" -f (
@@ -343,21 +399,21 @@ function Set-TargetServicePrincipalResults {
                 Tag  = $sp
             }
             $item | Add-Member -MemberType ScriptMethod -Name ToString -Value { $this.Text } -Force
-            [void]$cmbIdentityResults.Items.Add($item)
+            [void]$script:cmbIdentityResults.Items.Add($item)
         }
     }
     finally {
-        $cmbIdentityResults.EndUpdate()
+        $script:cmbIdentityResults.EndUpdate()
     }
 
-    $lblSearchResults.Text = "{0} matching identities" -f $Results.Count
+    $script:lblSearchResults.Text = "{0} matching identities" -f $Results.Count
 
     if ($Results.Count -eq 0) {
         $script:SuppressIdentitySelectionEvent = $false
         $script:TargetServicePrincipal = $null
         Update-IdentitySummary -ServicePrincipal $null
-        $gridAssignments.Rows.Clear()
-        $lblAssignedCount.Text = '0 permission(s) assigned'
+        $script:gridAssignments.Rows.Clear()
+        $script:lblAssignedCount.Text = '0 permission(s) assigned'
         return
     }
 
@@ -371,7 +427,7 @@ function Set-TargetServicePrincipalResults {
         }
     }
 
-    $cmbIdentityResults.SelectedIndex = $selectedIndex
+    $script:cmbIdentityResults.SelectedIndex = $selectedIndex
     $script:SuppressIdentitySelectionEvent = $false
 
     $selected = $Results[$selectedIndex]
@@ -411,7 +467,7 @@ function Load-TargetServicePrincipals {
 }
 
 function Filter-TargetServicePrincipals {
-    $term = $txtIdentityName.Text.Trim()
+    $term = $script:txtIdentityName.Text.Trim()
     $results = if ([string]::IsNullOrWhiteSpace($term)) {
         @($script:AllTargetServicePrincipals)
     }
@@ -448,7 +504,7 @@ function Assign-SelectedPermissions {
     }
 
     $selectedItems = @()
-    foreach ($item in $checkedPermissions.CheckedItems) {
+    foreach ($item in $script:checkedPermissions.CheckedItems) {
         $selectedItems += $item
     }
 
@@ -547,7 +603,7 @@ function Remove-SelectedPermissions {
         throw 'Select a target Managed Identity or service principal first.'
     }
 
-    $selectedRows = @($gridAssignments.SelectedRows)
+    $selectedRows = @($script:gridAssignments.SelectedRows)
     if ($selectedRows.Count -eq 0) {
         throw 'Select at least one existing Microsoft Graph permission to remove.'
     }
@@ -616,83 +672,14 @@ Remove these app role assignments?
     ) | Out-Null
 }
 
-function Set-RoundedButtonRegion {
-    param([Parameter(Mandatory)]$Button)
-
-    if ($Button.Width -le 0 -or $Button.Height -le 0) {
-        return
-    }
-
-    $radius = 7
-    $diameter = $radius * 2
-    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
-    try {
-        $path.AddArc(0, 0, $diameter, $diameter, 180, 90)
-        $path.AddArc($Button.Width - $diameter - 1, 0, $diameter, $diameter, 270, 90)
-        $path.AddArc(
-            $Button.Width - $diameter - 1,
-            $Button.Height - $diameter - 1,
-            $diameter,
-            $diameter,
-            0,
-            90
-        )
-        $path.AddArc(0, $Button.Height - $diameter - 1, $diameter, $diameter, 90, 90)
-        $path.CloseFigure()
-
-        $previousRegion = $Button.Region
-        $Button.Region = New-Object System.Drawing.Region($path)
-        if ($null -ne $previousRegion) {
-            $previousRegion.Dispose()
-        }
-    }
-    finally {
-        $path.Dispose()
-    }
-}
-
-function Set-PrimaryButtonStyle {
+function Start-GraphAppRoleManager {
+    [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]$Button,
-        [System.Drawing.Color]$BackColor = $colorBlue
+        [switch]$NoGui,
+
+        [ValidateSet('INFO', 'SUCCESS', 'WARNING', 'ERROR')]
+        [string]$LogLevel = 'INFO'
     )
-
-    $Button.BackColor = $BackColor
-    $Button.ForeColor = [System.Drawing.Color]::White
-    $Button.FlatStyle = 'Flat'
-    $Button.FlatAppearance.BorderSize = 0
-    $Button.FlatAppearance.MouseOverBackColor = [System.Windows.Forms.ControlPaint]::Light($BackColor)
-    $Button.FlatAppearance.MouseDownBackColor = [System.Windows.Forms.ControlPaint]::Dark($BackColor)
-    $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
-    $Button.Margin = New-Object System.Windows.Forms.Padding(6)
-    $Button.Add_Resize({
-        Set-RoundedButtonRegion -Button $this
-    })
-    Set-RoundedButtonRegion -Button $Button
-}
-
-function New-FieldLabel {
-    param([Parameter(Mandatory)][string]$Text)
-
-    $label = New-Object System.Windows.Forms.Label
-    $label.Text = $Text
-    $label.AutoSize = $true
-    $label.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9)
-    $label.ForeColor = [System.Drawing.Color]::FromArgb(55, 65, 81)
-    $label.Anchor = 'Left'
-    return $label
-}
-
-function Graph-AppRoleManager{
-    param(
-        [String]$LogLevel = 'SUCCESS',
-        [switch]$NoGui
-    )
-
-    $Global:Globalloglevel = $LogLevel
-
-    Set-StrictMode -Version Latest
-    $ErrorActionPreference = 'Stop'
 
     if (-not $IsWindows) {
         throw 'This GUI uses Windows Forms and must be run on Windows.'
@@ -701,343 +688,401 @@ function Graph-AppRoleManager{
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
-    # ---------------------------------------------------------------------------
-    # STATE
-    # ---------------------------------------------------------------------------
-
-    $script:GraphConnected         = $false
-    $script:GraphServicePrincipal  = $null
-    $script:TargetServicePrincipal = $null
-    $script:AllTargetServicePrincipals = @()
-    $script:SuppressIdentitySelectionEvent = $false
-    $script:AllApplicationRoles    = @()
-    $script:VisibleApplicationRoles = @()
+    Reset-GraphAppRoleManagerState
+    $script:LogLevel = $LogLevel
 
     # ---------------------------------------------------------------------------
     # FORM
     # ---------------------------------------------------------------------------
 
-    $colorCanvas = [System.Drawing.Color]::FromArgb(243, 246, 250)
-    $colorHeader = [System.Drawing.Color]::FromArgb(28, 38, 53)
-    $colorBlue = [System.Drawing.Color]::FromArgb(47, 128, 237)
-    $colorGreen = [System.Drawing.Color]::FromArgb(22, 163, 74)
-    $colorRed = [System.Drawing.Color]::FromArgb(190, 45, 45)
-    $colorMuted = [System.Drawing.Color]::FromArgb(96, 108, 126)
+    $script:colorCanvas = [System.Drawing.Color]::FromArgb(243, 246, 250)
+    $script:colorHeader = [System.Drawing.Color]::FromArgb(28, 38, 53)
+    $script:colorBlue = [System.Drawing.Color]::FromArgb(47, 128, 237)
+    $script:colorGreen = [System.Drawing.Color]::FromArgb(22, 163, 74)
+    $script:colorRed = [System.Drawing.Color]::FromArgb(190, 45, 45)
+    $script:colorMuted = [System.Drawing.Color]::FromArgb(96, 108, 126)
 
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = 'Graph App Role Manager — Native Windows'
-    $form.StartPosition = 'CenterScreen'
-    $form.Size = New-Object System.Drawing.Size(1280, 860)
-    $form.MinimumSize = New-Object System.Drawing.Size(1080, 740)
-    $form.BackColor = $colorCanvas
-    $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $form.AutoScaleMode = 'Dpi'
+    function Set-RoundedButtonRegion {
+        param([Parameter(Mandatory)]$Button)
 
-    $rootLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $rootLayout.Dock = 'Fill'
-    $rootLayout.ColumnCount = 1
-    $rootLayout.RowCount = 2
-    $rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 96)))
-    $rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
-    $form.Controls.Add($rootLayout)
+        if ($Button.Width -le 0 -or $Button.Height -le 0) {
+            return
+        }
 
-    $headerPanel = New-Object System.Windows.Forms.TableLayoutPanel
-    $headerPanel.Dock = 'Fill'
-    $headerPanel.BackColor = $colorHeader
-    $headerPanel.ColumnCount = 2
-    $headerPanel.RowCount = 1
-    $headerPanel.Padding = New-Object System.Windows.Forms.Padding(24, 14, 24, 14)
-    $headerPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
-    $headerPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 250)))
-    $rootLayout.Controls.Add($headerPanel, 0, 0)
+        $radius = 7
+        $diameter = $radius * 2
+        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+        try {
+            $path.AddArc(0, 0, $diameter, $diameter, 180, 90)
+            $path.AddArc($Button.Width - $diameter - 1, 0, $diameter, $diameter, 270, 90)
+            $path.AddArc(
+                $Button.Width - $diameter - 1,
+                $Button.Height - $diameter - 1,
+                $diameter,
+                $diameter,
+                0,
+                90
+            )
+            $path.AddArc(0, $Button.Height - $diameter - 1, $diameter, $diameter, 90, 90)
+            $path.CloseFigure()
 
-    $titlePanel = New-Object System.Windows.Forms.TableLayoutPanel
-    $titlePanel.Dock = 'Fill'
-    $titlePanel.ColumnCount = 1
-    $titlePanel.RowCount = 2
-    $titlePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 62)))
-    $titlePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 38)))
-    $headerPanel.Controls.Add($titlePanel, 0, 0)
+            $previousRegion = $Button.Region
+            $Button.Region = New-Object System.Drawing.Region($path)
+            if ($null -ne $previousRegion) {
+                $previousRegion.Dispose()
+            }
+        }
+        finally {
+            $path.Dispose()
+        }
+    }
 
-    $lblTitle = New-Object System.Windows.Forms.Label
-    $lblTitle.Text = 'Graph App Role Manager'
-    $lblTitle.ForeColor = [System.Drawing.Color]::White
-    $lblTitle.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 20)
-    $lblTitle.AutoSize = $true
-    $lblTitle.Anchor = 'Left'
-    $titlePanel.Controls.Add($lblTitle, 0, 0)
+    function Set-PrimaryButtonStyle {
+        param(
+            [Parameter(Mandatory)]$Button,
+            [System.Drawing.Color]$BackColor = $script:colorBlue
+        )
 
-    $lblSubtitle = New-Object System.Windows.Forms.Label
-    $lblSubtitle.Text = 'Native Windows alternative · Assign Microsoft Graph application permissions'
-    $lblSubtitle.ForeColor = [System.Drawing.Color]::FromArgb(195, 205, 219)
-    $lblSubtitle.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-    $lblSubtitle.AutoSize = $true
-    $lblSubtitle.Anchor = 'Left'
-    $titlePanel.Controls.Add($lblSubtitle, 0, 1)
+        $Button.BackColor = $BackColor
+        $Button.ForeColor = [System.Drawing.Color]::White
+        $Button.FlatStyle = 'Flat'
+        $Button.FlatAppearance.BorderSize = 0
+        $Button.FlatAppearance.MouseOverBackColor = [System.Windows.Forms.ControlPaint]::Light($BackColor)
+        $Button.FlatAppearance.MouseDownBackColor = [System.Windows.Forms.ControlPaint]::Dark($BackColor)
+        $Button.Cursor = [System.Windows.Forms.Cursors]::Hand
+        $Button.Margin = New-Object System.Windows.Forms.Padding(6)
+        $Button.Add_Resize({
+            Set-RoundedButtonRegion -Button $this
+        })
+        Set-RoundedButtonRegion -Button $Button
+    }
 
-    $btnConnect = New-Object System.Windows.Forms.Button
-    $btnConnect.Text = 'Connect to Microsoft Graph'
-    $btnConnect.Size = New-Object System.Drawing.Size(230, 40)
-    $btnConnect.Anchor = 'Right'
-    $btnConnect.Margin = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
-    Set-PrimaryButtonStyle -Button $btnConnect
-    $headerPanel.Controls.Add($btnConnect, 1, 0)
+    function New-FieldLabel {
+        param([Parameter(Mandatory)][string]$Text)
 
-    $tabs = New-Object System.Windows.Forms.TabControl
-    $tabs.Dock = 'Fill'
-    $tabs.Padding = New-Object System.Drawing.Point(18, 7)
-    $tabs.Margin = New-Object System.Windows.Forms.Padding(12)
-    $rootLayout.Controls.Add($tabs, 0, 1)
+        $label = New-Object System.Windows.Forms.Label
+        $label.Text = $Text
+        $label.AutoSize = $true
+        $label.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 9)
+        $label.ForeColor = [System.Drawing.Color]::FromArgb(55, 65, 81)
+        $label.Anchor = 'Left'
+        return $label
+    }
+
+    $script:form = New-Object System.Windows.Forms.Form
+    $script:form.Text = 'Graph App Role Manager — Native Windows'
+    $script:form.StartPosition = 'CenterScreen'
+    $script:form.Size = New-Object System.Drawing.Size(1280, 860)
+    $script:form.MinimumSize = New-Object System.Drawing.Size(1080, 740)
+    $script:form.BackColor = $script:colorCanvas
+    $script:form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $script:form.AutoScaleMode = 'Dpi'
+
+    $script:rootLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:rootLayout.Dock = 'Fill'
+    $script:rootLayout.ColumnCount = 1
+    $script:rootLayout.RowCount = 2
+    $script:rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 96)))
+    $script:rootLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+    $script:form.Controls.Add($script:rootLayout)
+
+    $script:headerPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:headerPanel.Dock = 'Fill'
+    $script:headerPanel.BackColor = $script:colorHeader
+    $script:headerPanel.ColumnCount = 2
+    $script:headerPanel.RowCount = 1
+    $script:headerPanel.Padding = New-Object System.Windows.Forms.Padding(24, 14, 24, 14)
+    $script:headerPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+    $script:headerPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 250)))
+    $script:rootLayout.Controls.Add($script:headerPanel, 0, 0)
+
+    $script:titlePanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:titlePanel.Dock = 'Fill'
+    $script:titlePanel.ColumnCount = 1
+    $script:titlePanel.RowCount = 2
+    $script:titlePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 62)))
+    $script:titlePanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 38)))
+    $script:headerPanel.Controls.Add($script:titlePanel, 0, 0)
+
+    $script:lblTitle = New-Object System.Windows.Forms.Label
+    $script:lblTitle.Text = 'Graph App Role Manager'
+    $script:lblTitle.ForeColor = [System.Drawing.Color]::White
+    $script:lblTitle.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 20)
+    $script:lblTitle.AutoSize = $true
+    $script:lblTitle.Anchor = 'Left'
+    $script:titlePanel.Controls.Add($script:lblTitle, 0, 0)
+
+    $script:lblSubtitle = New-Object System.Windows.Forms.Label
+    $script:lblSubtitle.Text = 'Native Windows alternative · Assign Microsoft Graph application permissions'
+    $script:lblSubtitle.ForeColor = [System.Drawing.Color]::FromArgb(195, 205, 219)
+    $script:lblSubtitle.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $script:lblSubtitle.AutoSize = $true
+    $script:lblSubtitle.Anchor = 'Left'
+    $script:titlePanel.Controls.Add($script:lblSubtitle, 0, 1)
+
+    $script:btnConnect = New-Object System.Windows.Forms.Button
+    $script:btnConnect.Text = 'Connect to Microsoft Graph'
+    $script:btnConnect.Size = New-Object System.Drawing.Size(230, 40)
+    $script:btnConnect.Anchor = 'Right'
+    $script:btnConnect.Margin = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
+    Set-PrimaryButtonStyle -Button $script:btnConnect
+    $script:headerPanel.Controls.Add($script:btnConnect, 1, 0)
+
+    $script:tabs = New-Object System.Windows.Forms.TabControl
+    $script:tabs.Dock = 'Fill'
+    $script:tabs.Padding = New-Object System.Drawing.Point(18, 7)
+    $script:tabs.Margin = New-Object System.Windows.Forms.Padding(12)
+    $script:rootLayout.Controls.Add($script:tabs, 0, 1)
 
     # ---------------------------------------------------------------------------
     # TAB 1 - ASSIGN
     # ---------------------------------------------------------------------------
 
-    $tabAssign = New-Object System.Windows.Forms.TabPage
-    $tabAssign.Text = 'Manage permissions'
-    $tabAssign.BackColor = $colorCanvas
-    $tabAssign.Padding = New-Object System.Windows.Forms.Padding(14)
-    $tabs.TabPages.Add($tabAssign)
+    $script:tabAssign = New-Object System.Windows.Forms.TabPage
+    $script:tabAssign.Text = 'Manage permissions'
+    $script:tabAssign.BackColor = $script:colorCanvas
+    $script:tabAssign.Padding = New-Object System.Windows.Forms.Padding(14)
+    $script:tabs.TabPages.Add($script:tabAssign)
 
-    $mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $mainLayout.Dock = 'Fill'
-    $mainLayout.ColumnCount = 1
-    $mainLayout.RowCount = 2
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 235)))
-    $mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
-    $tabAssign.Controls.Add($mainLayout)
+    $script:mainLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:mainLayout.Dock = 'Fill'
+    $script:mainLayout.ColumnCount = 1
+    $script:mainLayout.RowCount = 2
+    $script:mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 235)))
+    $script:mainLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+    $script:tabAssign.Controls.Add($script:mainLayout)
 
-    $grpIdentity = New-Object System.Windows.Forms.GroupBox
-    $grpIdentity.Text = '1. Choose the target identity'
-    $grpIdentity.Dock = 'Fill'
-    $grpIdentity.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 14)
-    $grpIdentity.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
-    $mainLayout.Controls.Add($grpIdentity, 0, 0)
+    $script:grpIdentity = New-Object System.Windows.Forms.GroupBox
+    $script:grpIdentity.Text = '1. Choose the target identity'
+    $script:grpIdentity.Dock = 'Fill'
+    $script:grpIdentity.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 14)
+    $script:grpIdentity.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 10)
+    $script:mainLayout.Controls.Add($script:grpIdentity, 0, 0)
 
-    $identityLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $identityLayout.Dock = 'Fill'
-    $identityLayout.ColumnCount = 2
-    $identityLayout.RowCount = 4
-    $identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
-    $identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 110)))
-    $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 27)))
-    $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 38)))
-    $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 57)))
-    $identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
-    $grpIdentity.Controls.Add($identityLayout)
+    $script:identityLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:identityLayout.Dock = 'Fill'
+    $script:identityLayout.ColumnCount = 2
+    $script:identityLayout.RowCount = 4
+    $script:identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+    $script:identityLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 110)))
+    $script:identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 27)))
+    $script:identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 38)))
+    $script:identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 57)))
+    $script:identityLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+    $script:grpIdentity.Controls.Add($script:identityLayout)
 
-    $lblIdentitySearch = New-FieldLabel -Text 'Filter the loaded identities by name, application ID, or object ID'
-    $identityLayout.Controls.Add($lblIdentitySearch, 0, 0)
+    $script:lblIdentitySearch = New-FieldLabel -Text 'Filter the loaded identities by name, application ID, or object ID'
+    $script:identityLayout.Controls.Add($script:lblIdentitySearch, 0, 0)
 
-    $txtIdentityName = New-Object System.Windows.Forms.TextBox
-    $txtIdentityName.PlaceholderText = 'All identities are shown after connection — type here to filter'
-    $txtIdentityName.Dock = 'Fill'
-    $txtIdentityName.Margin = New-Object System.Windows.Forms.Padding(0, 3, 8, 6)
-    $identityLayout.Controls.Add($txtIdentityName, 0, 1)
+    $script:txtIdentityName = New-Object System.Windows.Forms.TextBox
+    $script:txtIdentityName.PlaceholderText = 'All identities are shown after connection — type here to filter'
+    $script:txtIdentityName.Dock = 'Fill'
+    $script:txtIdentityName.Margin = New-Object System.Windows.Forms.Padding(0, 3, 8, 6)
+    $script:identityLayout.Controls.Add($script:txtIdentityName, 0, 1)
 
-    $btnSearchIdentity = New-Object System.Windows.Forms.Button
-    $btnSearchIdentity.Text = 'Clear'
-    $btnSearchIdentity.Dock = 'Fill'
-    $btnSearchIdentity.Margin = New-Object System.Windows.Forms.Padding(4, 2, 0, 5)
+    $script:btnSearchIdentity = New-Object System.Windows.Forms.Button
+    $script:btnSearchIdentity.Text = 'Clear'
+    $script:btnSearchIdentity.Dock = 'Fill'
+    $script:btnSearchIdentity.Margin = New-Object System.Windows.Forms.Padding(4, 2, 0, 5)
     Set-PrimaryButtonStyle `
-        -Button $btnSearchIdentity `
+        -Button $script:btnSearchIdentity `
         -BackColor ([System.Drawing.Color]::FromArgb(226, 232, 240))
-    $btnSearchIdentity.ForeColor = [System.Drawing.Color]::FromArgb(45, 55, 72)
-    $identityLayout.Controls.Add($btnSearchIdentity, 1, 1)
+    $script:btnSearchIdentity.ForeColor = [System.Drawing.Color]::FromArgb(45, 55, 72)
+    $script:identityLayout.Controls.Add($script:btnSearchIdentity, 1, 1)
 
-    $resultsLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $resultsLayout.Dock = 'Fill'
-    $resultsLayout.ColumnCount = 1
-    $resultsLayout.RowCount = 2
-    $resultsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 23)))
-    $resultsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
-    $identityLayout.SetColumnSpan($resultsLayout, 2)
-    $identityLayout.Controls.Add($resultsLayout, 0, 2)
+    $script:resultsLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:resultsLayout.Dock = 'Fill'
+    $script:resultsLayout.ColumnCount = 1
+    $script:resultsLayout.RowCount = 2
+    $script:resultsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 23)))
+    $script:resultsLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+    $script:identityLayout.SetColumnSpan($script:resultsLayout, 2)
+    $script:identityLayout.Controls.Add($script:resultsLayout, 0, 2)
 
-    $lblSearchResults = New-FieldLabel -Text 'Matching identities'
-    $resultsLayout.Controls.Add($lblSearchResults, 0, 0)
+    $script:lblSearchResults = New-FieldLabel -Text 'Matching identities'
+    $script:resultsLayout.Controls.Add($script:lblSearchResults, 0, 0)
 
-    $cmbIdentityResults = New-Object System.Windows.Forms.ComboBox
-    $cmbIdentityResults.DropDownStyle = 'DropDownList'
-    $cmbIdentityResults.Dock = 'Fill'
-    $cmbIdentityResults.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 4)
-    $resultsLayout.Controls.Add($cmbIdentityResults, 0, 1)
+    $script:cmbIdentityResults = New-Object System.Windows.Forms.ComboBox
+    $script:cmbIdentityResults.DropDownStyle = 'DropDownList'
+    $script:cmbIdentityResults.Dock = 'Fill'
+    $script:cmbIdentityResults.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 4)
+    $script:resultsLayout.Controls.Add($script:cmbIdentityResults, 0, 1)
 
-    $summaryPanel = New-Object System.Windows.Forms.TableLayoutPanel
-    $summaryPanel.Dock = 'Fill'
-    $summaryPanel.BackColor = [System.Drawing.Color]::White
-    $summaryPanel.CellBorderStyle = 'Single'
-    $summaryPanel.ColumnCount = 4
-    $summaryPanel.RowCount = 2
-    $summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 85)))
-    $summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 50)))
-    $summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 85)))
-    $summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 50)))
-    $summaryPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 50)))
-    $summaryPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 50)))
-    $identityLayout.SetColumnSpan($summaryPanel, 2)
-    $identityLayout.Controls.Add($summaryPanel, 0, 3)
+    $script:summaryPanel = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:summaryPanel.Dock = 'Fill'
+    $script:summaryPanel.BackColor = [System.Drawing.Color]::White
+    $script:summaryPanel.CellBorderStyle = 'Single'
+    $script:summaryPanel.ColumnCount = 4
+    $script:summaryPanel.RowCount = 2
+    $script:summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 85)))
+    $script:summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 50)))
+    $script:summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 85)))
+    $script:summaryPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 50)))
+    $script:summaryPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 50)))
+    $script:summaryPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 50)))
+    $script:identityLayout.SetColumnSpan($script:summaryPanel, 2)
+    $script:identityLayout.Controls.Add($script:summaryPanel, 0, 3)
 
-    $lblIdentityName = New-FieldLabel -Text 'Name'
-    $lblIdentityNameValue = New-FieldLabel -Text '-'
-    $lblIdentityNameValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $lblObjectId = New-FieldLabel -Text 'Object ID'
-    $lblObjectIdValue = New-FieldLabel -Text '-'
-    $lblObjectIdValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $lblAppId = New-FieldLabel -Text 'App ID'
-    $lblAppIdValue = New-FieldLabel -Text '-'
-    $lblAppIdValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $summaryPanel.Controls.Add($lblIdentityName, 0, 0)
-    $summaryPanel.Controls.Add($lblIdentityNameValue, 1, 0)
-    $summaryPanel.Controls.Add($lblObjectId, 0, 1)
-    $summaryPanel.Controls.Add($lblObjectIdValue, 1, 1)
-    $summaryPanel.Controls.Add($lblAppId, 2, 1)
-    $summaryPanel.Controls.Add($lblAppIdValue, 3, 1)
-    $summaryPanel.SetColumnSpan($lblIdentityNameValue, 3)
+    $script:lblIdentityName = New-FieldLabel -Text 'Name'
+    $script:lblIdentityNameValue = New-FieldLabel -Text '-'
+    $script:lblIdentityNameValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $script:lblObjectId = New-FieldLabel -Text 'Object ID'
+    $script:lblObjectIdValue = New-FieldLabel -Text '-'
+    $script:lblObjectIdValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $script:lblAppId = New-FieldLabel -Text 'App ID'
+    $script:lblAppIdValue = New-FieldLabel -Text '-'
+    $script:lblAppIdValue.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $script:summaryPanel.Controls.Add($script:lblIdentityName, 0, 0)
+    $script:summaryPanel.Controls.Add($script:lblIdentityNameValue, 1, 0)
+    $script:summaryPanel.Controls.Add($script:lblObjectId, 0, 1)
+    $script:summaryPanel.Controls.Add($script:lblObjectIdValue, 1, 1)
+    $script:summaryPanel.Controls.Add($script:lblAppId, 2, 1)
+    $script:summaryPanel.Controls.Add($script:lblAppIdValue, 3, 1)
+    $script:summaryPanel.SetColumnSpan($script:lblIdentityNameValue, 3)
 
-    $splitPermissions = New-Object System.Windows.Forms.SplitContainer
-    $splitPermissions.Dock = 'Fill'
-    $splitPermissions.SplitterWidth = 8
-    $splitPermissions.BackColor = $colorCanvas
-    $mainLayout.Controls.Add($splitPermissions, 0, 1)
+    $script:splitPermissions = New-Object System.Windows.Forms.SplitContainer
+    $script:splitPermissions.Dock = 'Fill'
+    $script:splitPermissions.SplitterWidth = 8
+    $script:splitPermissions.BackColor = $script:colorCanvas
+    $script:mainLayout.Controls.Add($script:splitPermissions, 0, 1)
 
-    $grpPermissions = New-Object System.Windows.Forms.GroupBox
-    $grpPermissions.Text = '2. Select Microsoft Graph application permissions'
-    $grpPermissions.Dock = 'Fill'
-    $grpPermissions.Padding = New-Object System.Windows.Forms.Padding(14)
-    $splitPermissions.Panel1.Controls.Add($grpPermissions)
+    $script:grpPermissions = New-Object System.Windows.Forms.GroupBox
+    $script:grpPermissions.Text = '2. Select Microsoft Graph application permissions'
+    $script:grpPermissions.Dock = 'Fill'
+    $script:grpPermissions.Padding = New-Object System.Windows.Forms.Padding(14)
+    $script:splitPermissions.Panel1.Controls.Add($script:grpPermissions)
 
-    $permissionLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $permissionLayout.Dock = 'Fill'
-    $permissionLayout.ColumnCount = 2
-    $permissionLayout.RowCount = 3
-    $permissionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
-    $permissionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 170)))
-    $permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 42)))
-    $permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
-    $permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 44)))
-    $grpPermissions.Controls.Add($permissionLayout)
+    $script:permissionLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:permissionLayout.Dock = 'Fill'
+    $script:permissionLayout.ColumnCount = 2
+    $script:permissionLayout.RowCount = 3
+    $script:permissionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+    $script:permissionLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 170)))
+    $script:permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 42)))
+    $script:permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+    $script:permissionLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 44)))
+    $script:grpPermissions.Controls.Add($script:permissionLayout)
 
-    $txtPermissionFilter = New-Object System.Windows.Forms.TextBox
-    $txtPermissionFilter.PlaceholderText = 'Filter permissions, e.g. DeviceManagement or Sites'
-    $txtPermissionFilter.Dock = 'Fill'
-    $txtPermissionFilter.Margin = New-Object System.Windows.Forms.Padding(0, 5, 8, 7)
-    $permissionLayout.Controls.Add($txtPermissionFilter, 0, 0)
+    $script:txtPermissionFilter = New-Object System.Windows.Forms.TextBox
+    $script:txtPermissionFilter.PlaceholderText = 'Filter permissions, e.g. DeviceManagement or Sites'
+    $script:txtPermissionFilter.Dock = 'Fill'
+    $script:txtPermissionFilter.Margin = New-Object System.Windows.Forms.Padding(0, 5, 8, 7)
+    $script:permissionLayout.Controls.Add($script:txtPermissionFilter, 0, 0)
 
-    $btnLoadPermissions = New-Object System.Windows.Forms.Button
-    $btnLoadPermissions.Text = 'Reload permissions'
-    $btnLoadPermissions.Dock = 'Fill'
-    $btnLoadPermissions.Margin = New-Object System.Windows.Forms.Padding(4, 3, 0, 6)
-    Set-PrimaryButtonStyle -Button $btnLoadPermissions
-    $permissionLayout.Controls.Add($btnLoadPermissions, 1, 0)
+    $script:btnLoadPermissions = New-Object System.Windows.Forms.Button
+    $script:btnLoadPermissions.Text = 'Reload permissions'
+    $script:btnLoadPermissions.Dock = 'Fill'
+    $script:btnLoadPermissions.Margin = New-Object System.Windows.Forms.Padding(4, 3, 0, 6)
+    Set-PrimaryButtonStyle -Button $script:btnLoadPermissions
+    $script:permissionLayout.Controls.Add($script:btnLoadPermissions, 1, 0)
 
-    $checkedPermissions = New-Object System.Windows.Forms.CheckedListBox
-    $checkedPermissions.CheckOnClick = $true
-    $checkedPermissions.Dock = 'Fill'
-    $checkedPermissions.HorizontalScrollbar = $true
-    $checkedPermissions.DisplayMember = 'Text'
-    $checkedPermissions.BackColor = [System.Drawing.Color]::White
-    $permissionLayout.SetColumnSpan($checkedPermissions, 2)
-    $permissionLayout.Controls.Add($checkedPermissions, 0, 1)
+    $script:checkedPermissions = New-Object System.Windows.Forms.CheckedListBox
+    $script:checkedPermissions.CheckOnClick = $true
+    $script:checkedPermissions.Dock = 'Fill'
+    $script:checkedPermissions.HorizontalScrollbar = $true
+    $script:checkedPermissions.DisplayMember = 'Text'
+    $script:checkedPermissions.BackColor = [System.Drawing.Color]::White
+    $script:permissionLayout.SetColumnSpan($script:checkedPermissions, 2)
+    $script:permissionLayout.Controls.Add($script:checkedPermissions, 0, 1)
 
-    $lblPermissionCount = New-Object System.Windows.Forms.Label
-    $lblPermissionCount.Text = '0 permission(s) displayed'
-    $lblPermissionCount.AutoSize = $true
-    $lblPermissionCount.ForeColor = $colorMuted
-    $lblPermissionCount.Anchor = 'Left'
-    $permissionLayout.Controls.Add($lblPermissionCount, 0, 2)
+    $script:lblPermissionCount = New-Object System.Windows.Forms.Label
+    $script:lblPermissionCount.Text = '0 permission(s) displayed'
+    $script:lblPermissionCount.AutoSize = $true
+    $script:lblPermissionCount.ForeColor = $script:colorMuted
+    $script:lblPermissionCount.Anchor = 'Left'
+    $script:permissionLayout.Controls.Add($script:lblPermissionCount, 0, 2)
 
-    $btnAssign = New-Object System.Windows.Forms.Button
-    $btnAssign.Text = 'Assign selected'
-    $btnAssign.Dock = 'Fill'
-    $btnAssign.Margin = New-Object System.Windows.Forms.Padding(4, 6, 0, 0)
-    Set-PrimaryButtonStyle -Button $btnAssign -BackColor $colorGreen
-    $permissionLayout.Controls.Add($btnAssign, 1, 2)
+    $script:btnAssign = New-Object System.Windows.Forms.Button
+    $script:btnAssign.Text = 'Assign selected'
+    $script:btnAssign.Dock = 'Fill'
+    $script:btnAssign.Margin = New-Object System.Windows.Forms.Padding(4, 6, 0, 0)
+    Set-PrimaryButtonStyle -Button $script:btnAssign -BackColor $script:colorGreen
+    $script:permissionLayout.Controls.Add($script:btnAssign, 1, 2)
 
-    $grpCurrent = New-Object System.Windows.Forms.GroupBox
-    $grpCurrent.Text = '3. Current Microsoft Graph assignments'
-    $grpCurrent.Dock = 'Fill'
-    $grpCurrent.Padding = New-Object System.Windows.Forms.Padding(14)
-    $splitPermissions.Panel2.Controls.Add($grpCurrent)
+    $script:grpCurrent = New-Object System.Windows.Forms.GroupBox
+    $script:grpCurrent.Text = '3. Current Microsoft Graph assignments'
+    $script:grpCurrent.Dock = 'Fill'
+    $script:grpCurrent.Padding = New-Object System.Windows.Forms.Padding(14)
+    $script:splitPermissions.Panel2.Controls.Add($script:grpCurrent)
 
-    $assignmentLayout = New-Object System.Windows.Forms.TableLayoutPanel
-    $assignmentLayout.Dock = 'Fill'
-    $assignmentLayout.ColumnCount = 2
-    $assignmentLayout.RowCount = 3
-    $assignmentLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
-    $assignmentLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 120)))
-    $assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 42)))
-    $assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
-    $assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 44)))
-    $grpCurrent.Controls.Add($assignmentLayout)
+    $script:assignmentLayout = New-Object System.Windows.Forms.TableLayoutPanel
+    $script:assignmentLayout.Dock = 'Fill'
+    $script:assignmentLayout.ColumnCount = 2
+    $script:assignmentLayout.RowCount = 3
+    $script:assignmentLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Percent', 100)))
+    $script:assignmentLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle('Absolute', 120)))
+    $script:assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 42)))
+    $script:assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Percent', 100)))
+    $script:assignmentLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle('Absolute', 44)))
+    $script:grpCurrent.Controls.Add($script:assignmentLayout)
 
-    $lblAssignedCount = New-Object System.Windows.Forms.Label
-    $lblAssignedCount.Text = '0 permission(s) assigned'
-    $lblAssignedCount.ForeColor = $colorMuted
-    $lblAssignedCount.AutoSize = $true
-    $lblAssignedCount.Anchor = 'Left'
-    $assignmentLayout.Controls.Add($lblAssignedCount, 0, 0)
+    $script:lblAssignedCount = New-Object System.Windows.Forms.Label
+    $script:lblAssignedCount.Text = '0 permission(s) assigned'
+    $script:lblAssignedCount.ForeColor = $script:colorMuted
+    $script:lblAssignedCount.AutoSize = $true
+    $script:lblAssignedCount.Anchor = 'Left'
+    $script:assignmentLayout.Controls.Add($script:lblAssignedCount, 0, 0)
 
-    $btnRefreshAssignments = New-Object System.Windows.Forms.Button
-    $btnRefreshAssignments.Text = 'Refresh'
-    $btnRefreshAssignments.Dock = 'Fill'
-    $btnRefreshAssignments.Margin = New-Object System.Windows.Forms.Padding(4, 3, 0, 6)
-    Set-PrimaryButtonStyle -Button $btnRefreshAssignments
-    $assignmentLayout.Controls.Add($btnRefreshAssignments, 1, 0)
+    $script:btnRefreshAssignments = New-Object System.Windows.Forms.Button
+    $script:btnRefreshAssignments.Text = 'Refresh'
+    $script:btnRefreshAssignments.Dock = 'Fill'
+    $script:btnRefreshAssignments.Margin = New-Object System.Windows.Forms.Padding(4, 3, 0, 6)
+    Set-PrimaryButtonStyle -Button $script:btnRefreshAssignments
+    $script:assignmentLayout.Controls.Add($script:btnRefreshAssignments, 1, 0)
 
-    $gridAssignments = New-Object System.Windows.Forms.DataGridView
-    $gridAssignments.Dock = 'Fill'
-    $gridAssignments.AllowUserToAddRows = $false
-    $gridAssignments.AllowUserToDeleteRows = $false
-    $gridAssignments.AllowUserToResizeRows = $false
-    $gridAssignments.ReadOnly = $true
-    $gridAssignments.RowHeadersVisible = $false
-    $gridAssignments.SelectionMode = 'FullRowSelect'
-    $gridAssignments.MultiSelect = $true
-    $gridAssignments.AutoSizeColumnsMode = 'Fill'
-    $gridAssignments.BackgroundColor = [System.Drawing.Color]::White
-    $gridAssignments.BorderStyle = 'Fixed3D'
-    $gridAssignments.EnableHeadersVisualStyles = $false
-    $gridAssignments.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(229, 235, 244)
-    $gridAssignments.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(31, 41, 55)
-    $gridAssignments.DefaultCellStyle.SelectionBackColor = $colorBlue
-    $assignmentLayout.SetColumnSpan($gridAssignments, 2)
-    $assignmentLayout.Controls.Add($gridAssignments, 0, 1)
-    [void]$gridAssignments.Columns.Add('Permission', 'Permission')
-    [void]$gridAssignments.Columns.Add('DisplayName', 'Display name')
-    [void]$gridAssignments.Columns.Add('RoleId', 'App role ID')
-    [void]$gridAssignments.Columns.Add('AssignmentId', 'Assignment ID')
-    $gridAssignments.Columns['RoleId'].Visible = $false
-    $gridAssignments.Columns['AssignmentId'].Visible = $false
+    $script:gridAssignments = New-Object System.Windows.Forms.DataGridView
+    $script:gridAssignments.Dock = 'Fill'
+    $script:gridAssignments.AllowUserToAddRows = $false
+    $script:gridAssignments.AllowUserToDeleteRows = $false
+    $script:gridAssignments.AllowUserToResizeRows = $false
+    $script:gridAssignments.ReadOnly = $true
+    $script:gridAssignments.RowHeadersVisible = $false
+    $script:gridAssignments.SelectionMode = 'FullRowSelect'
+    $script:gridAssignments.MultiSelect = $true
+    $script:gridAssignments.AutoSizeColumnsMode = 'Fill'
+    $script:gridAssignments.BackgroundColor = [System.Drawing.Color]::White
+    $script:gridAssignments.BorderStyle = 'Fixed3D'
+    $script:gridAssignments.EnableHeadersVisualStyles = $false
+    $script:gridAssignments.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(229, 235, 244)
+    $script:gridAssignments.ColumnHeadersDefaultCellStyle.ForeColor = [System.Drawing.Color]::FromArgb(31, 41, 55)
+    $script:gridAssignments.DefaultCellStyle.SelectionBackColor = $script:colorBlue
+    $script:assignmentLayout.SetColumnSpan($script:gridAssignments, 2)
+    $script:assignmentLayout.Controls.Add($script:gridAssignments, 0, 1)
+    [void]$script:gridAssignments.Columns.Add('Permission', 'Permission')
+    [void]$script:gridAssignments.Columns.Add('DisplayName', 'Display name')
+    [void]$script:gridAssignments.Columns.Add('RoleId', 'App role ID')
+    [void]$script:gridAssignments.Columns.Add('AssignmentId', 'Assignment ID')
+    $script:gridAssignments.Columns['RoleId'].Visible = $false
+    $script:gridAssignments.Columns['AssignmentId'].Visible = $false
 
-    $btnRemove = New-Object System.Windows.Forms.Button
-    $btnRemove.Text = 'Remove selected'
-    $btnRemove.Dock = 'Fill'
-    $btnRemove.Margin = New-Object System.Windows.Forms.Padding(4, 6, 0, 0)
-    Set-PrimaryButtonStyle -Button $btnRemove -BackColor $colorRed
-    $assignmentLayout.Controls.Add($btnRemove, 1, 2)
+    $script:btnRemove = New-Object System.Windows.Forms.Button
+    $script:btnRemove.Text = 'Remove selected'
+    $script:btnRemove.Dock = 'Fill'
+    $script:btnRemove.Margin = New-Object System.Windows.Forms.Padding(4, 6, 0, 0)
+    Set-PrimaryButtonStyle -Button $script:btnRemove -BackColor $script:colorRed
+    $script:assignmentLayout.Controls.Add($script:btnRemove, 1, 2)
 
-    $tabLog = New-Object System.Windows.Forms.TabPage
-    $tabLog.Text = 'Activity log'
-    $tabLog.Padding = New-Object System.Windows.Forms.Padding(12)
-    $tabs.TabPages.Add($tabLog)
+    $script:tabLog = New-Object System.Windows.Forms.TabPage
+    $script:tabLog.Text = 'Activity log'
+    $script:tabLog.Padding = New-Object System.Windows.Forms.Padding(12)
+    $script:tabs.TabPages.Add($script:tabLog)
 
-    $txtLog = New-Object System.Windows.Forms.TextBox
-    $txtLog.Dock = 'Fill'
-    $txtLog.Multiline = $true
-    $txtLog.ReadOnly = $true
-    $txtLog.ScrollBars = 'Both'
-    $txtLog.WordWrap = $false
-    $txtLog.BackColor = [System.Drawing.Color]::FromArgb(17, 24, 39)
-    $txtLog.ForeColor = [System.Drawing.Color]::FromArgb(229, 231, 235)
-    $txtLog.Font = New-Object System.Drawing.Font('Consolas', 9)
-    $tabLog.Controls.Add($txtLog)
+    $script:txtLog = New-Object System.Windows.Forms.TextBox
+    $script:txtLog.Dock = 'Fill'
+    $script:txtLog.Multiline = $true
+    $script:txtLog.ReadOnly = $true
+    $script:txtLog.ScrollBars = 'Both'
+    $script:txtLog.WordWrap = $false
+    $script:txtLog.BackColor = [System.Drawing.Color]::FromArgb(17, 24, 39)
+    $script:txtLog.ForeColor = [System.Drawing.Color]::FromArgb(229, 231, 235)
+    $script:txtLog.Font = New-Object System.Drawing.Font('Consolas', 9)
+    $script:tabLog.Controls.Add($script:txtLog)
 
     # ---------------------------------------------------------------------------
     # EVENTS
     # ---------------------------------------------------------------------------
 
-    $btnConnect.Add_Click({
+    $script:btnConnect.Add_Click({
         try {
             Set-BusyState -Busy $true
             Ensure-GraphModules
@@ -1056,10 +1101,10 @@ function Graph-AppRoleManager{
             $context = Get-MgContext
             $script:GraphConnected = $true
 
-            $btnConnect.Text = "Connected: $($context.Account)"
-            $btnConnect.BackColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
-            $btnConnect.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(34, 180, 88)
-            $btnConnect.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(18, 130, 59)
+            $script:btnConnect.Text = "Connected: $($context.Account)"
+            $script:btnConnect.BackColor = [System.Drawing.Color]::FromArgb(22, 163, 74)
+            $script:btnConnect.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(34, 180, 88)
+            $script:btnConnect.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(18, 130, 59)
 
             Write-UiLog -Message (
                 "Connected to tenant {0} as {1}." -f
@@ -1078,12 +1123,12 @@ function Graph-AppRoleManager{
         }
     })
 
-    $btnSearchIdentity.Add_Click({
-        $txtIdentityName.Clear()
-        $txtIdentityName.Focus()
+    $script:btnSearchIdentity.Add_Click({
+        $script:txtIdentityName.Clear()
+        $script:txtIdentityName.Focus()
     })
 
-    $txtIdentityName.Add_TextChanged({
+    $script:txtIdentityName.Add_TextChanged({
         try {
             Filter-TargetServicePrincipals
         }
@@ -1092,7 +1137,7 @@ function Graph-AppRoleManager{
         }
     })
 
-    $cmbIdentityResults.Add_SelectedIndexChanged({
+    $script:cmbIdentityResults.Add_SelectedIndexChanged({
         if ($script:SuppressIdentitySelectionEvent) {
             return
         }
@@ -1112,7 +1157,7 @@ function Graph-AppRoleManager{
         }
     })
 
-    $btnLoadPermissions.Add_Click({
+    $script:btnLoadPermissions.Add_Click({
         try {
             Set-BusyState -Busy $true
             Load-GraphApplicationRoles
@@ -1125,7 +1170,7 @@ function Graph-AppRoleManager{
         }
     })
 
-    $txtPermissionFilter.Add_TextChanged({
+    $script:txtPermissionFilter.Add_TextChanged({
         try {
             Apply-PermissionFilter
         }
@@ -1134,7 +1179,7 @@ function Graph-AppRoleManager{
         }
     })
 
-    $btnRefreshAssignments.Add_Click({
+    $script:btnRefreshAssignments.Add_Click({
         try {
             Set-BusyState -Busy $true
             Refresh-CurrentAssignments
@@ -1147,7 +1192,7 @@ function Graph-AppRoleManager{
         }
     })
 
-    $btnAssign.Add_Click({
+    $script:btnAssign.Add_Click({
         try {
             Set-BusyState -Busy $true
             Assign-SelectedPermissions
@@ -1160,7 +1205,7 @@ function Graph-AppRoleManager{
         }
     })
 
-    $btnRemove.Add_Click({
+    $script:btnRemove.Add_Click({
         try {
             Set-BusyState -Busy $true
             Remove-SelectedPermissions
@@ -1173,7 +1218,7 @@ function Graph-AppRoleManager{
         }
     })
 
-    $form.Add_FormClosing({
+    $script:form.Add_FormClosing({
         try {
             if ($script:GraphConnected) {
                 Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
@@ -1182,10 +1227,10 @@ function Graph-AppRoleManager{
         catch {}
     })
 
-    $form.Add_Shown({
-        if ($splitPermissions.ClientSize.Width -gt 0) {
-            $splitPermissions.SplitterDistance = [Math]::Floor(
-                ($splitPermissions.ClientSize.Width - $splitPermissions.SplitterWidth) / 2
+    $script:form.Add_Shown({
+        if ($script:splitPermissions.ClientSize.Width -gt 0) {
+            $script:splitPermissions.SplitterDistance = [Math]::Floor(
+                ($script:splitPermissions.ClientSize.Width - $script:splitPermissions.SplitterWidth) / 2
             )
         }
 
@@ -1193,28 +1238,24 @@ function Graph-AppRoleManager{
         Write-UiLog -Message 'Connect to Microsoft Graph, choose a loaded identity, then select application permissions.'
     })
 
-    $splitPermissions.Add_SizeChanged({
-        if ($splitPermissions.ClientSize.Width -le 0) {
+    $script:splitPermissions.Add_SizeChanged({
+        if ($script:splitPermissions.ClientSize.Width -le 0) {
             return
         }
 
         $balancedDistance = [Math]::Floor(
-            ($splitPermissions.ClientSize.Width - $splitPermissions.SplitterWidth) / 2
+            ($script:splitPermissions.ClientSize.Width - $script:splitPermissions.SplitterWidth) / 2
         )
 
         if ($balancedDistance -gt 0) {
-            $splitPermissions.SplitterDistance = $balancedDistance
+            $script:splitPermissions.SplitterDistance = $balancedDistance
         }
     })
 
-    # ---------------------------------------------------------------------------
-    # START
-    # ---------------------------------------------------------------------------
 
     if (-not $NoGui) {
-        [void]$form.ShowDialog()
+        [void]$script:form.ShowDialog()
     }
 }
 
-Export-ModuleMember -Function Graph-AppRoleManager
-
+Export-ModuleMember -Function Start-GraphAppRoleManager
